@@ -1,6 +1,6 @@
-# MacroArc Studio
+# MacroArc
 
-MacroArc Studio streamlines repetitive mouse and keyboard work without turning your desktop into another control panel. Record once, preview the sequence live, and replay it with a hotkey or a tuned auto clicker whenever the routine returns.
+MacroArc streamlines repetitive mouse and keyboard work without turning your desktop into another control panel. Record once, preview the sequence live, and replay it with a hotkey or a tuned auto clicker whenever the routine returns.
 
 ## Why MacroArc?
 
