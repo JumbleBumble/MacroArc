@@ -50,6 +50,8 @@ const Dashboard = () => {
 							onSaveCapture={macro.savePendingCapture}
 							onPlayPending={macro.playPendingCapture}
 							onDiscardCapture={macro.discardPendingCapture}
+							recorderHotkey={macro.recorderHotkey}
+							onUpdateRecorderHotkey={macro.updateRecorderHotkey}
 						/>
 					</div>
 
@@ -81,6 +83,7 @@ const Dashboard = () => {
 							onUpdateLoopSettings={
 								macro.updateMacroLoopSettings
 							}
+							onUpdateMacroEvents={macro.updateMacroEvents}
 							queueLoopEnabled={macro.queueLoopEnabled}
 							queueLoopDelayMs={macro.queueLoopDelayMs}
 							onUpdateQueueLoop={macro.updateQueueLoopSettings}

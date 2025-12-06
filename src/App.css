@@ -16,6 +16,10 @@
   --subtle: rgba(255, 255, 255, 0.65);
   --text-strong: #f7f8fc;
   --text-muted: rgba(247, 248, 252, 0.6);
+  --loop-surface-bg: rgba(4, 5, 11, 0.65);
+  --loop-surface-border: rgba(255, 255, 255, 0.12);
+  --input-surface: rgba(255, 255, 255, 0.08);
+  --input-border: rgba(255, 255, 255, 0.2);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -32,6 +36,10 @@
   --subtle: rgba(15, 18, 33, 0.72);
   --text-strong: #0f1221;
   --text-muted: rgba(15, 18, 33, 0.65);
+  --loop-surface-bg: rgba(15, 18, 33, 0.08);
+  --loop-surface-border: rgba(15, 18, 33, 0.2);
+  --input-surface: rgba(15, 18, 33, 0.04);
+  --input-border: rgba(15, 18, 33, 0.16);
 }
 
 body {
@@ -73,6 +81,19 @@ body::after {
   border: 1px solid var(--surface-border);
   border-radius: 26px;
   box-shadow: 0 25px 55px rgba(4, 5, 11, 0.55);
+}
+
+.loop-surface {
+  border: 1px solid var(--loop-surface-border) !important;
+  background: var(--loop-surface-bg) !important;
+  transition: border-color 0.3s ease, background 0.3s ease;
+}
+
+.input-surface {
+  background: var(--input-surface);
+  border-color: var(--input-border) !important;
+  color: var(--text-strong);
+  transition: border-color 0.2s ease, background 0.2s ease;
 }
 
 .grid-noise {
