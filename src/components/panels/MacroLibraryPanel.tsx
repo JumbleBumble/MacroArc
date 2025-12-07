@@ -1,7 +1,13 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Edit3, Play, PlusCircle, Trash2 } from 'lucide-react';
-import { MacroEvent, MacroSequence } from '../../utils/macroTypes';
+import {
+	MacroEvent,
+	MacroSequence,
+	DEFAULT_MACRO_SPEED,
+	MIN_MACRO_SPEED,
+	MAX_MACRO_SPEED,
+} from '../../utils/macroTypes';
 import { formatTimestamp } from '../../utils/format';
 import { HotkeyField } from '../shared/HotkeyField';
 import { MacroEditModal } from './MacroEditModal';
@@ -19,6 +25,7 @@ interface MacroLibraryPanelProps {
   onPlayQueue: () => Promise<void>;
   onClearQueue: () => void;
   onUpdateLoopSettings: (id: string, settings: { enabled?: boolean; delayMs?: number }) => void;
+	onUpdateSpeed: (id: string, speed: number) => void;
   onUpdateMacroEvents: (id: string, events: MacroEvent[]) => Promise<void> | void;
   queueLoopEnabled: boolean;
   queueLoopDelayMs: number;
@@ -41,6 +48,7 @@ export const MacroLibraryPanel = ({
 	onPlayQueue,
 	onClearQueue,
 	onUpdateLoopSettings,
+	onUpdateSpeed,
 	onUpdateMacroEvents,
 	queueLoopEnabled,
 	queueLoopDelayMs,
@@ -66,6 +74,11 @@ export const MacroLibraryPanel = ({
 		setEditingMacro(null)
 	}
 
+	const describeSpeed = (value: number) => {
+		const rounded = Number(value.toFixed(2))
+		return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded}x`
+	}
+
 	return (
 		<>
 			<section className="glass-panel rounded-3xl p-6">
@@ -89,6 +102,7 @@ export const MacroLibraryPanel = ({
 		<div className="mt-5 space-y-4">
 			{macros.map((macro) => {
 				const isActive = macro.id === selectedMacroId
+				const speedValue = macro.playbackSpeed ?? DEFAULT_MACRO_SPEED
 				return (
 					<motion.div
 						layout
@@ -164,6 +178,41 @@ export const MacroLibraryPanel = ({
 								helper="Assign a global shortcut to instantly trigger this macro."
 								placeholder="CommandOrControl+Alt+M"
 							/>
+						</div>
+						<div className="loop-surface mt-4 rounded-2xl border border-white/10 bg-black/30 p-4">
+							<div className="flex flex-wrap items-center justify-between gap-3">
+								<div>
+									<p className="text-sm font-semibold text-white">
+										Playback speed
+									</p>
+									<p className="text-xs uppercase tracking-[0.3em] text-white/60">
+										{describeSpeed(speedValue)}
+									</p>
+								</div>
+								<span className="text-xs text-white/50">
+									Scale entire macro timing
+								</span>
+							</div>
+							<div className="mt-3">
+								<input
+									type="range"
+									min={MIN_MACRO_SPEED}
+									max={MAX_MACRO_SPEED}
+									step={0.05}
+									value={speedValue}
+									onChange={(event) =>
+										onUpdateSpeed(
+											macro.id,
+											Number(event.target.value)
+										)
+									}
+									className="w-full accent-brand-primary"
+								/>
+							</div>
+							<div className="mt-1 flex items-center justify-between text-[0.65rem] uppercase tracking-[0.3em] text-white/40">
+								<span>{describeSpeed(MIN_MACRO_SPEED)}</span>
+								<span>{describeSpeed(MAX_MACRO_SPEED)}</span>
+							</div>
 						</div>
 						<div className="loop-surface mt-4 rounded-2xl border border-white/10 bg-black/30 p-4">
 							<div className="flex flex-wrap items-center justify-between gap-3">

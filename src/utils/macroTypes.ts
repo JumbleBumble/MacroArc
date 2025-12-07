@@ -25,6 +25,7 @@ export interface MacroSequence {
   loopCount: number;
   loopEnabled?: boolean;
   loopDelayMs?: number;
+  playbackSpeed?: number;
   events: MacroEvent[];
   lastRun?: number;
   hotkey?: string | null;
@@ -78,3 +79,7 @@ export const toWireEvent = (event: MacroEvent): MacroEventWire => ({
 });
 
 export const clampInterval = (value: number) => Math.max(5, Math.min(1000, value));
+
+export const DEFAULT_MACRO_SPEED = 1;
+export const MIN_MACRO_SPEED = 0.25;
+export const MAX_MACRO_SPEED = 3;

@@ -83,6 +83,7 @@ const Dashboard = () => {
 							onUpdateLoopSettings={
 								macro.updateMacroLoopSettings
 							}
+							onUpdateSpeed={macro.updateMacroPlaybackSpeed}
 							onUpdateMacroEvents={macro.updateMacroEvents}
 							queueLoopEnabled={macro.queueLoopEnabled}
 							queueLoopDelayMs={macro.queueLoopDelayMs}

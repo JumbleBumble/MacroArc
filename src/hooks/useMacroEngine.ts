@@ -11,6 +11,9 @@ import {
 	MacroSequence,
 	MacroStats,
 	MouseButton,
+	DEFAULT_MACRO_SPEED,
+	MIN_MACRO_SPEED,
+	MAX_MACRO_SPEED,
 	fromWireEvent,
 	toWireEvent,
 } from '../utils/macroTypes';
@@ -73,6 +76,16 @@ const clampLoopDelay = (value: number | undefined, fallback: number) => {
 		return fallback
 	}
 	return Math.max(MIN_LOOP_DELAY_MS, value)
+}
+
+const clampPlaybackSpeed = (value: number | undefined) => {
+	if (typeof value !== 'number' || Number.isNaN(value)) {
+		return DEFAULT_MACRO_SPEED
+	}
+	return Math.min(
+		MAX_MACRO_SPEED,
+		Math.max(MIN_MACRO_SPEED, value)
+	)
 }
 
 const wait = (ms: number) =>
@@ -235,6 +248,70 @@ const sanitizeMacroEventList = (events: MacroEvent[]) =>
 		.map(sanitizeMacroEvent)
 		.sort((a, b) => a.offsetMs - b.offsetMs)
 
+const HOTKEY_TOKEN_ALIASES: Record<string, string[]> = {
+	commandorcontrol: ['command', 'cmd', 'meta', 'control', 'ctrl'],
+	command: ['command', 'cmd', 'meta'],
+	cmd: ['command', 'cmd', 'meta'],
+	control: ['control', 'ctrl'],
+	ctrl: ['control', 'ctrl'],
+	alt: ['alt'],
+	option: ['alt'],
+	shift: ['shift'],
+	meta: ['meta', 'command', 'cmd'],
+	super: ['meta', 'super'],
+}
+
+const normalizeHotkeySegment = (value: string) => value.trim().toLowerCase()
+
+const buildHotkeyTokenSet = (combo: string | null) => {
+	if (!combo?.length) return null
+	const tokens = combo.split('+').map(normalizeHotkeySegment).filter(Boolean)
+	if (!tokens.length) return null
+	const result = new Set<string>()
+	tokens.forEach((token) => {
+		const aliases = HOTKEY_TOKEN_ALIASES[token] ?? [token]
+		aliases.forEach((alias) => result.add(alias))
+	})
+	return result
+}
+
+const stripRecorderHotkeyTail = (
+	events: MacroEvent[],
+	hotkey: string | null
+): MacroEvent[] => {
+	const tokenSet = buildHotkeyTokenSet(hotkey)
+	if (!tokenSet || !events.length) return events
+	const lastOffset = events[events.length - 1]?.offsetMs ?? 0
+	let cutoff = events.length
+	while (cutoff > 0) {
+		const candidate = events[cutoff - 1]
+		if (
+			(candidate.kind.type === 'key-down' ||
+				candidate.kind.type === 'key-up') &&
+			typeof (candidate.kind as { key?: string }).key === 'string'
+		) {
+			const keyLabel = (candidate.kind as { key?: string }).key ?? ''
+			const tokens = keyLabel
+				.split('+')
+				.map(normalizeHotkeySegment)
+				.filter(Boolean)
+			if (
+				tokens.length &&
+				tokens.every((token: string) => tokenSet.has(token)) &&
+				lastOffset - candidate.offsetMs <= 350
+			) {
+				cutoff -= 1
+				continue
+			}
+		}
+		break
+	}
+	if (cutoff === events.length) {
+		return events
+	}
+	return events.slice(0, cutoff)
+}
+
 export const useMacroEngine = () => {
 	const nativeRuntime = isTauri()
 	const [macros, setMacros] = useState<MacroSequence[]>([])
@@ -382,6 +459,7 @@ export const useMacroEngine = () => {
 							macro.loopDelayMs ?? DEFAULT_LOOP_DELAY_MS,
 							DEFAULT_LOOP_DELAY_MS
 						),
+						playbackSpeed: clampPlaybackSpeed(macro.playbackSpeed),
 					}))
 					setMacros(normalized)
 					setSelectedMacroId((current) => {
@@ -544,7 +622,6 @@ export const useMacroEngine = () => {
 		let unlistenStatus: (() => void) | undefined
 		let unlistenError: (() => void) | undefined
 		let unlistenPlayback: (() => void) | undefined
-
 		;(async () => {
 			unlistenEvent = await listen<MacroEventWire>(
 				'macro://event',
@@ -679,7 +756,11 @@ export const useMacroEngine = () => {
 				const sorted = [...events].sort(
 					(a, b) => a.offsetMs - b.offsetMs
 				)
-				if (!sorted.length) {
+				const sanitized = stripRecorderHotkeyTail(
+					sorted,
+					recorderHotkey
+				)
+				if (!sanitized.length) {
 					setStatusText('No events captured')
 					pushEntry(setActivity, {
 						id: nanoid(),
@@ -690,13 +771,13 @@ export const useMacroEngine = () => {
 					return
 				}
 
-				setPendingCapture(sorted)
+				setPendingCapture(sanitized)
 				setStatusText('Capture ready')
 				pushEntry(setActivity, {
 					id: nanoid(),
 					label: 'Capture ready for review',
 					tone: 'success',
-					meta: `${sorted.length} events`,
+					meta: `${sanitized.length} events`,
 					timestamp: Date.now(),
 				})
 			} catch (error) {
@@ -711,7 +792,7 @@ export const useMacroEngine = () => {
 				setRecording(false)
 			}
 		},
-		[nativeRuntime, recording]
+		[nativeRuntime, recorderHotkey, recording]
 	)
 
 	useEffect(() => {
@@ -779,6 +860,7 @@ export const useMacroEngine = () => {
 			loopCount: 1,
 			loopEnabled: false,
 			loopDelayMs: DEFAULT_LOOP_DELAY_MS,
+			playbackSpeed: DEFAULT_MACRO_SPEED,
 			events,
 			lastRun: Date.now(),
 			hotkey: null,
@@ -862,7 +944,9 @@ export const useMacroEngine = () => {
 			currentPlaybackContextRef.current = contextId
 			currentPlaybackMacroRef.current = target.id
 			const loops = options?.loops ?? target.loopCount
-			const speed = options?.speed ?? 1
+			const speed = clampPlaybackSpeed(
+				options?.speed ?? target.playbackSpeed ?? DEFAULT_MACRO_SPEED
+			)
 			const playbackPromise = nativeRuntime
 				? new Promise<PlaybackStatusPayload>((resolve) => {
 						playbackResolversRef.current.set(contextId, resolve)
@@ -1322,6 +1406,35 @@ export const useMacroEngine = () => {
 		[scheduleMacroLoop, setMacros, stopMacroLoop]
 	)
 
+	const updateMacroPlaybackSpeed = useCallback(
+		(id: string, speed: number) => {
+			const baseline = macrosRef.current.find((macro) => macro.id === id)
+			if (!baseline) return
+			const nextSpeed = clampPlaybackSpeed(speed)
+			if (baseline.playbackSpeed === nextSpeed) {
+				return
+			}
+			setMacros((prev) =>
+				prev.map((macro) =>
+					macro.id === id
+						? {
+							...macro,
+							playbackSpeed: nextSpeed,
+						}
+					: macro
+				)
+			)
+			pushEntry(setActivity, {
+				id: nanoid(),
+				label: `${baseline.name} speed updated`,
+				tone: 'info',
+				meta: `${nextSpeed.toFixed(2)}x`,
+				timestamp: Date.now(),
+			})
+		},
+		[setMacros]
+	)
+
 	const playQueuedMacros = useCallback(async () => {
 		if (!queuedMacros.length || queueRunningRef.current) return
 		const itemsToPlay = [...queuedMacros]
@@ -1522,6 +1635,7 @@ export const useMacroEngine = () => {
 		recorderHotkey,
 		updateRecorderHotkey,
 		updateMacroLoopSettings,
+		updateMacroPlaybackSpeed,
 		updateMacroHotkey,
 		queueLoopEnabled,
 		queueLoopDelayMs,
