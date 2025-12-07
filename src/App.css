@@ -96,6 +96,24 @@ body::after {
   transition: border-color 0.2s ease, background 0.2s ease;
 }
 
+select.input-surface,
+.input-surface select {
+  color: var(--text-strong);
+  background: var(--input-surface);
+}
+
+.input-surface option,
+select.input-surface option {
+  background-color: var(--surface-raised);
+  color: #f7f8fc;
+}
+
+[data-theme='light'] .input-surface option,
+[data-theme='light'] select.input-surface option {
+  background-color: #ffffff;
+  color: #0f1221;
+}
+
 .grid-noise {
   background-image: radial-gradient(circle at center, rgba(255, 255, 255, 0.18), transparent 55%);
   opacity: 0.12;

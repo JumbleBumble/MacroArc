@@ -481,6 +481,7 @@ fn label_to_enigo_key(label: &str) -> Option<Key> {
         "end" => Some(Key::End),
         "pageup" => Some(Key::PageUp),
         "pagedown" => Some(Key::PageDown),
+        #[cfg(not(target_os = "macos"))]
         "insert" => Some(Key::Insert),
         "delete" => Some(Key::Delete),
         "up" | "uparrow" => Some(Key::UpArrow),

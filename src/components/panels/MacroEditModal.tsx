@@ -2,7 +2,12 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Clock, Keyboard, MousePointer2, ScrollText, Trash2, X } from 'lucide-react'
-import type { MacroEvent, MacroSequence, MouseButton } from '../../utils/macroTypes'
+import { nanoid } from 'nanoid'
+import type {
+	MacroEvent,
+	MacroSequence,
+	MouseButton,
+} from '../../utils/macroTypes'
 import { describeHotkey, formatHotkeyFromEvent } from '../../utils/hotkeys'
 
 interface MacroEditModalProps {
@@ -18,14 +23,89 @@ const buttonOptions: { label: string; value: MouseButton }[] = [
 	{ label: 'Unknown', value: 'unknown' },
 ]
 
+type MacroEventType = MacroEvent['kind']['type']
+
+const eventTypeOptions: { label: string; value: MacroEventType }[] = [
+	{ label: 'Cursor move', value: 'mouse-move' },
+	{ label: 'Mouse down', value: 'mouse-down' },
+	{ label: 'Mouse up', value: 'mouse-up' },
+	{ label: 'Key down', value: 'key-down' },
+	{ label: 'Key up', value: 'key-up' },
+	{ label: 'Scroll', value: 'scroll' },
+]
+
+const DEFAULT_EVENT_OFFSET_STEP = 50
+
+const clampStep = (value: number, maxStep: number) => {
+	if (!Number.isFinite(value)) {
+		return 1
+	}
+	return Math.min(Math.max(1, Math.trunc(value)), Math.max(1, maxStep))
+}
+
+const createDefaultEvent = (
+	type: MacroEventType,
+	offsetMs: number
+): MacroEvent => {
+	const base = {
+		id: nanoid(),
+		offsetMs: Math.max(0, Math.round(offsetMs)),
+		createdAt: Date.now(),
+	}
+	switch (type) {
+		case 'mouse-move':
+			return {
+				...base,
+				kind: { type: 'mouse-move', x: 0, y: 0 },
+			}
+		case 'mouse-down':
+			return {
+				...base,
+				kind: { type: 'mouse-down', button: 'left' },
+			}
+		case 'mouse-up':
+			return {
+				...base,
+				kind: { type: 'mouse-up', button: 'left' },
+			}
+		case 'key-down':
+			return {
+				...base,
+				kind: { type: 'key-down', key: '' },
+			}
+		case 'key-up':
+			return {
+				...base,
+				kind: { type: 'key-up', key: '' },
+			}
+		case 'scroll':
+			return {
+				...base,
+				kind: { type: 'scroll', delta_x: 0, delta_y: 0 },
+			}
+		default:
+			return {
+				...base,
+				kind: { type: 'mouse-move', x: 0, y: 0 },
+			}
+	}
+}
+
 const cloneEvent = (event: MacroEvent): MacroEvent => ({
 	...event,
 	kind: { ...event.kind },
 })
 
-export const MacroEditModal = ({ macro, onClose, onSave }: MacroEditModalProps) => {
+export const MacroEditModal = ({
+	macro,
+	onClose,
+	onSave,
+}: MacroEditModalProps) => {
 	const [draftEvents, setDraftEvents] = useState<MacroEvent[]>([])
 	const [saving, setSaving] = useState(false)
+	const [newEventType, setNewEventType] =
+		useState<MacroEventType>('mouse-move')
+	const [newEventStep, setNewEventStep] = useState(1)
 
 	useEffect(() => {
 		if (macro) {
@@ -33,8 +113,15 @@ export const MacroEditModal = ({ macro, onClose, onSave }: MacroEditModalProps) 
 		} else {
 			setDraftEvents([])
 		}
+		setNewEventStep((macro?.events.length ?? 0) + 1 || 1)
 		setSaving(false)
 	}, [macro])
+
+	useEffect(() => {
+		setNewEventStep((current) =>
+			clampStep(current, draftEvents.length + 1)
+		)
+	}, [draftEvents.length])
 
 	useEffect(() => {
 		if (!macro || typeof document === 'undefined') return
@@ -74,15 +161,18 @@ export const MacroEditModal = ({ macro, onClose, onSave }: MacroEditModalProps) 
 		setDraftEvents((prev) => prev.filter((_, idx) => idx !== index))
 	}, [])
 
-	const updateOffset = useCallback((index: number, value: string) => {
-		const parsed = Number(value)
-		const current = draftEvents[index]
-		if (!current) return
-		updateEventAt(index, {
-			...current,
-			offsetMs: Number.isFinite(parsed) ? parsed : 0,
-		})
-	}, [draftEvents, updateEventAt])
+	const updateOffset = useCallback(
+		(index: number, value: string) => {
+			const parsed = Number(value)
+			const current = draftEvents[index]
+			if (!current) return
+			updateEventAt(index, {
+				...current,
+				offsetMs: Number.isFinite(parsed) ? parsed : 0,
+			})
+		},
+		[draftEvents, updateEventAt]
+	)
 
 	const updateMouseMove = useCallback(
 		(index: number, axis: 'x' | 'y', value: string) => {
@@ -104,7 +194,10 @@ export const MacroEditModal = ({ macro, onClose, onSave }: MacroEditModalProps) 
 		(index: number, value: MouseButton) => {
 			const current = draftEvents[index]
 			if (!current) return
-			if (current.kind.type !== 'mouse-down' && current.kind.type !== 'mouse-up') {
+			if (
+				current.kind.type !== 'mouse-down' &&
+				current.kind.type !== 'mouse-up'
+			) {
 				return
 			}
 			updateEventAt(index, {
@@ -122,7 +215,10 @@ export const MacroEditModal = ({ macro, onClose, onSave }: MacroEditModalProps) 
 		(index: number, value: string | null) => {
 			const current = draftEvents[index]
 			if (!current) return
-			if (current.kind.type !== 'key-down' && current.kind.type !== 'key-up') {
+			if (
+				current.kind.type !== 'key-down' &&
+				current.kind.type !== 'key-up'
+			) {
 				return
 			}
 			updateEventAt(index, {
@@ -169,6 +265,28 @@ export const MacroEditModal = ({ macro, onClose, onSave }: MacroEditModalProps) 
 		}
 	}, [draftEvents, hasChanges, macro, onSave])
 
+	const handleAddEvent = useCallback(() => {
+		if (!macro) return
+		setDraftEvents((prev) => {
+			const totalSteps = prev.length + 1
+			const clampedStep = clampStep(newEventStep, totalSteps)
+			const insertIndex = clampedStep - 1
+			const before = prev.slice(0, insertIndex)
+			const after = prev.slice(insertIndex)
+			const beforeOffset = before[before.length - 1]?.offsetMs ?? 0
+			const afterOffset = after[0]?.offsetMs
+			const inferredOffset =
+				afterOffset !== undefined
+					? Math.max(0, Math.round((beforeOffset + afterOffset) / 2))
+					: beforeOffset + DEFAULT_EVENT_OFFSET_STEP
+			const next = createDefaultEvent(newEventType, inferredOffset)
+			return [...before, next, ...after]
+		})
+		setNewEventStep((current) =>
+			clampStep(current + 1, draftEvents.length + 2)
+		)
+	}, [draftEvents.length, macro, newEventStep, newEventType])
+
 	if (typeof document === 'undefined') {
 		return null
 	}
@@ -188,8 +306,12 @@ export const MacroEditModal = ({ macro, onClose, onSave }: MacroEditModalProps) 
 						initial={{ y: 24, opacity: 0 }}
 						animate={{ y: 0, opacity: 1 }}
 						exit={{ y: 24, opacity: 0 }}
-						transition={{ type: 'spring', stiffness: 170, damping: 24 }}
-						className="glass-panel relative max-h-[90vh] w-full max-w-4xl overflow-hidden border border-white/15 p-6 shadow-2xl"
+						transition={{
+							type: 'spring',
+							stiffness: 170,
+							damping: 24,
+						}}
+						className="glass-panel relative flex max-h-[90vh] w-full max-w-4xl flex-col overflow-y-auto border border-white/15 p-6 shadow-2xl"
 						onClick={(event) => event.stopPropagation()}
 					>
 						<div className="flex items-start justify-between gap-4">
@@ -201,7 +323,8 @@ export const MacroEditModal = ({ macro, onClose, onSave }: MacroEditModalProps) 
 									{macro.name}
 								</h3>
 								<p className="text-sm text-white/60">
-									Fine-tune timing, keystrokes, and cursor positions.
+									Fine-tune timing, keystrokes, and cursor
+									positions.
 								</p>
 							</div>
 							<button
@@ -216,7 +339,10 @@ export const MacroEditModal = ({ macro, onClose, onSave }: MacroEditModalProps) 
 						<div className="mt-5 flex flex-wrap items-center gap-3 text-xs uppercase tracking-[0.3em] text-white/50">
 							<span>{macro.events.length} events</span>
 							<span className="text-white/30">•</span>
-							<span>Loop {macro.loopEnabled ? 'enabled' : 'disabled'}</span>
+							<span>
+								Loop{' '}
+								{macro.loopEnabled ? 'enabled' : 'disabled'}
+							</span>
 						</div>
 
 						<div className="mt-6 max-h-[60vh] space-y-3 overflow-y-auto pr-1">
@@ -230,13 +356,17 @@ export const MacroEditModal = ({ macro, onClose, onSave }: MacroEditModalProps) 
 										<div className="flex flex-wrap items-center justify-between gap-3">
 											<div className="flex items-center gap-2 text-sm font-semibold text-white">
 												{renderEventIcon(event)}
-												<span>{formatEventLabel(event)}</span>
+												<span>
+													{formatEventLabel(event)}
+												</span>
 											</div>
 											<div className="flex items-center gap-2 text-xs uppercase tracking-[0.3em] text-white/50">
 												<span>Step {index + 1}</span>
 												<button
 													type="button"
-													onClick={() => removeEvent(index)}
+													onClick={() =>
+														removeEvent(index)
+													}
 													className="flex items-center gap-1 rounded-full border border-white/15 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.3em] text-white/60 transition-colors hover:border-brand-secondary/60 hover:text-white"
 												>
 													<Trash2 size={12} />
@@ -252,7 +382,12 @@ export const MacroEditModal = ({ macro, onClose, onSave }: MacroEditModalProps) 
 													className="input-surface mt-2 w-full rounded-2xl border px-4 py-2 text-sm text-white focus:border-brand-primary focus:outline-none"
 													min={0}
 													value={event.offsetMs}
-													onChange={(e) => updateOffset(index, e.target.value)}
+													onChange={(e) =>
+														updateOffset(
+															index,
+															e.target.value
+														)
+													}
 												/>
 											</label>
 											<div className="flex-1">
@@ -275,9 +410,67 @@ export const MacroEditModal = ({ macro, onClose, onSave }: MacroEditModalProps) 
 							)}
 						</div>
 
+						<div className="mt-4 rounded-2xl border border-dashed border-white/15 bg-white/5 p-4">
+							<div className="flex flex-col gap-3 md:flex-row md:items-end">
+								<label className="flex-1 text-xs uppercase tracking-[0.3em] text-white/50">
+									New step type
+									<select
+										className="input-surface mt-2 w-full rounded-2xl border px-4 py-2 text-sm text-white focus:border-brand-primary focus:outline-none"
+										value={newEventType}
+										onChange={(event) =>
+											setNewEventType(
+												event.target
+													.value as MacroEventType
+											)
+										}
+									>
+										{eventTypeOptions.map((option) => (
+											<option
+												key={option.value}
+												value={option.value}
+											>
+												{option.label}
+											</option>
+										))}
+									</select>
+								</label>
+								<label className="text-xs uppercase tracking-[0.3em] text-white/50 md:w-40">
+									Insert at step
+									<input
+										type="number"
+										min={1}
+										max={Math.max(
+											1,
+											draftEvents.length + 1
+										)}
+										className="input-surface mt-2 w-full rounded-2xl border px-4 py-2 text-sm text-white focus:border-brand-primary focus:outline-none"
+										value={newEventStep}
+										onChange={(event) =>
+											setNewEventStep(
+												clampStep(
+													Number(event.target.value),
+													draftEvents.length + 1
+												)
+											)
+										}
+									/>
+								</label>
+								<button
+									type="button"
+									onClick={handleAddEvent}
+									className="rounded-full bg-brand-primary/80 px-6 py-3 text-sm font-semibold text-white md:w-auto"
+									disabled={!macro}
+								>
+									Add step
+								</button>
+							</div>
+						</div>
+
 						<div className="mt-6 flex flex-wrap items-center justify-between gap-3">
 							<div className="text-xs text-white/50">
-								{hasChanges ? 'Unsaved edits ready' : 'All changes synced'}
+								{hasChanges
+									? 'Unsaved edits ready'
+									: 'All changes synced'}
 							</div>
 							<div className="flex flex-wrap gap-2">
 								<button
@@ -299,7 +492,11 @@ export const MacroEditModal = ({ macro, onClose, onSave }: MacroEditModalProps) 
 									type="button"
 									onClick={handleSave}
 									className="rounded-full bg-brand-primary/80 px-6 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-white/20"
-									disabled={!hasChanges || saving || !draftEvents.length}
+									disabled={
+										!hasChanges ||
+										saving ||
+										!draftEvents.length
+									}
 								>
 									{saving ? 'Saving…' : 'Save edits'}
 								</button>

@@ -65,6 +65,8 @@ const DEFAULT_QUEUE_HOTKEY = 'CommandOrControl+Shift+Q'
 const DEFAULT_LOOP_DELAY_MS = 1000
 const DEFAULT_QUEUE_LOOP_DELAY_MS = 1500
 const MIN_LOOP_DELAY_MS = 0
+const RECORDER_HOTKEY_HEAD_WINDOW_MS = 200
+const RECORDER_HOTKEY_TAIL_WINDOW_MS = 300
 
 type PlaybackStatusPayload = {
 	context_id?: string | null
@@ -82,10 +84,7 @@ const clampPlaybackSpeed = (value: number | undefined) => {
 	if (typeof value !== 'number' || Number.isNaN(value)) {
 		return DEFAULT_MACRO_SPEED
 	}
-	return Math.min(
-		MAX_MACRO_SPEED,
-		Math.max(MIN_MACRO_SPEED, value)
-	)
+	return Math.min(MAX_MACRO_SPEED, Math.max(MIN_MACRO_SPEED, value))
 }
 
 const wait = (ms: number) =>
@@ -179,7 +178,12 @@ const estimateMacroDurationMs = (
 	return (lastOffset / speed) * loops
 }
 
-const VALID_MOUSE_BUTTONS: MouseButton[] = ['left', 'right', 'middle', 'unknown']
+const VALID_MOUSE_BUTTONS: MouseButton[] = [
+	'left',
+	'right',
+	'middle',
+	'unknown',
+]
 
 const ensureNumber = (value: unknown, fallback = 0) => {
 	const parsed = Number(value)
@@ -216,9 +220,7 @@ const sanitizeMacroEvent = (event: MacroEvent): MacroEvent => {
 		case 'key-down':
 		case 'key-up': {
 			const key =
-				typeof event.kind.key === 'string'
-					? event.kind.key.trim()
-					: ''
+				typeof event.kind.key === 'string' ? event.kind.key.trim() : ''
 			return {
 				...event,
 				offsetMs: offset,
@@ -244,9 +246,7 @@ const sanitizeMacroEvent = (event: MacroEvent): MacroEvent => {
 }
 
 const sanitizeMacroEventList = (events: MacroEvent[]) =>
-	[...events]
-		.map(sanitizeMacroEvent)
-		.sort((a, b) => a.offsetMs - b.offsetMs)
+	[...events].map(sanitizeMacroEvent).sort((a, b) => a.offsetMs - b.offsetMs)
 
 const HOTKEY_TOKEN_ALIASES: Record<string, string[]> = {
 	commandorcontrol: ['command', 'cmd', 'meta', 'control', 'ctrl'],
@@ -261,55 +261,138 @@ const HOTKEY_TOKEN_ALIASES: Record<string, string[]> = {
 	super: ['meta', 'super'],
 }
 
-const normalizeHotkeySegment = (value: string) => value.trim().toLowerCase()
+const normalizeHotkeySegment = (value: string) => {
+	let normalized = value.trim().toLowerCase()
+	if (normalized.length > 4) {
+		if (normalized.endsWith('left')) {
+			normalized = normalized.slice(0, -4)
+		} else if (normalized.endsWith('right')) {
+			normalized = normalized.slice(0, -5)
+		}
+	}
+	return normalized
+}
 
-const buildHotkeyTokenSet = (combo: string | null) => {
+type HotkeyMatcher = {
+	aliasSet: Set<string>
+	canonicalTokens: string[]
+}
+
+const buildHotkeyMatcher = (combo: string | null): HotkeyMatcher | null => {
 	if (!combo?.length) return null
-	const tokens = combo.split('+').map(normalizeHotkeySegment).filter(Boolean)
-	if (!tokens.length) return null
-	const result = new Set<string>()
-	tokens.forEach((token) => {
+	const canonicalTokens = combo
+		.split('+')
+		.map(normalizeHotkeySegment)
+		.filter(Boolean)
+	if (!canonicalTokens.length) return null
+	const aliasSet = new Set<string>()
+	canonicalTokens.forEach((token) => {
 		const aliases = HOTKEY_TOKEN_ALIASES[token] ?? [token]
-		aliases.forEach((alias) => result.add(alias))
+		aliases.forEach((alias) => aliasSet.add(alias))
 	})
-	return result
+	return { aliasSet, canonicalTokens }
+}
+
+const getEventHotkeyTokens = (event: MacroEvent) => {
+	if (event.kind.type !== 'key-down' && event.kind.type !== 'key-up') {
+		return null
+	}
+	const keyLabel = (event.kind as { key?: string }).key
+	if (typeof keyLabel !== 'string') {
+		return null
+	}
+	const tokens = keyLabel
+		.split('+')
+		.map(normalizeHotkeySegment)
+		.filter(Boolean)
+	return tokens.length ? tokens : null
+}
+
+const isRecorderHotkeyEvent = (event: MacroEvent, matcher: HotkeyMatcher) => {
+	const tokens = getEventHotkeyTokens(event)
+	if (!tokens?.length) {
+		return false
+	}
+	return tokens.every((token) => matcher.aliasSet.has(token))
+}
+
+const isExactRecorderHotkeyEvent = (
+	event: MacroEvent,
+	matcher: HotkeyMatcher
+) => {
+	const tokens = getEventHotkeyTokens(event)
+	if (!tokens?.length) {
+		return false
+	}
+	if (tokens.length !== matcher.canonicalTokens.length) {
+		return false
+	}
+	return tokens.every((token) => matcher.aliasSet.has(token))
+}
+
+const stripRecorderHotkeyHead = (
+	events: MacroEvent[],
+	hotkey: string | null
+): MacroEvent[] => {
+	const matcher = buildHotkeyMatcher(hotkey)
+	if (!matcher || !events.length) return events
+	let startIndex = 0
+	while (startIndex < events.length) {
+		const candidate = events[startIndex]
+		if (candidate.offsetMs > RECORDER_HOTKEY_HEAD_WINDOW_MS) {
+			break
+		}
+		if (!isRecorderHotkeyEvent(candidate, matcher)) {
+			break
+		}
+		startIndex += 1
+	}
+	if (!startIndex) {
+		return events
+	}
+	if (startIndex >= events.length) {
+		return []
+	}
+	const baseline = events[startIndex].offsetMs ?? 0
+	return events.slice(startIndex).map((event) => ({
+		...event,
+		offsetMs: Math.max(0, event.offsetMs - baseline),
+	}))
 }
 
 const stripRecorderHotkeyTail = (
 	events: MacroEvent[],
 	hotkey: string | null
 ): MacroEvent[] => {
-	const tokenSet = buildHotkeyTokenSet(hotkey)
-	if (!tokenSet || !events.length) return events
+	const matcher = buildHotkeyMatcher(hotkey)
+	if (!matcher || !events.length) return events
 	const lastOffset = events[events.length - 1]?.offsetMs ?? 0
 	let cutoff = events.length
 	while (cutoff > 0) {
 		const candidate = events[cutoff - 1]
 		if (
-			(candidate.kind.type === 'key-down' ||
-				candidate.kind.type === 'key-up') &&
-			typeof (candidate.kind as { key?: string }).key === 'string'
+			lastOffset - candidate.offsetMs > RECORDER_HOTKEY_TAIL_WINDOW_MS ||
+			!isRecorderHotkeyEvent(candidate, matcher)
 		) {
-			const keyLabel = (candidate.kind as { key?: string }).key ?? ''
-			const tokens = keyLabel
-				.split('+')
-				.map(normalizeHotkeySegment)
-				.filter(Boolean)
-			if (
-				tokens.length &&
-				tokens.every((token: string) => tokenSet.has(token)) &&
-				lastOffset - candidate.offsetMs <= 350
-			) {
-				cutoff -= 1
-				continue
-			}
+			break
 		}
-		break
+		cutoff -= 1
 	}
 	if (cutoff === events.length) {
 		return events
 	}
 	return events.slice(0, cutoff)
+}
+
+const removeRecorderHotkeyCombos = (
+	events: MacroEvent[],
+	hotkey: string | null
+): MacroEvent[] => {
+	const matcher = buildHotkeyMatcher(hotkey)
+	if (!matcher || !events.length) return events
+	return events.filter(
+		(event) => !isExactRecorderHotkeyEvent(event, matcher)
+	)
 }
 
 export const useMacroEngine = () => {
@@ -347,6 +430,8 @@ export const useMacroEngine = () => {
 	const macroHotkeyBindings = useRef<Map<string, string>>(new Map())
 	const macroHotkeyPressed = useRef<Map<string, boolean>>(new Map())
 	const recorderHotkeyHeldRef = useRef(false)
+	const recorderHotkeyIntentRef = useRef<'start' | 'stop' | null>(null)
+	const recordingOriginRef = useRef<'hotkey' | 'ui' | null>(null)
 	const macrosRef = useRef<MacroSequence[]>([])
 	const macroLoopTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(
 		new Map()
@@ -700,12 +785,16 @@ export const useMacroEngine = () => {
 
 	const startRecording = useCallback(
 		async (name?: string) => {
+			const invokedViaHotkey =
+				recorderHotkeyIntentRef.current === 'start'
+			recorderHotkeyIntentRef.current = null
 			if (recording) return
 			const label = name?.trim() || `Capture ${macros.length + 1}`
 			setCaptureName(label)
 			setRecentEvents([])
 			setPendingCapture(null)
 			setStatusText('Listening for input...')
+			recordingOriginRef.current = invokedViaHotkey ? 'hotkey' : 'ui'
 			pushEntry(setActivity, {
 				id: nanoid(),
 				label: `Recording ${label}`,
@@ -717,6 +806,7 @@ export const useMacroEngine = () => {
 				try {
 					await invoke('start_recording')
 				} catch (error) {
+					recordingOriginRef.current = null
 					pushEntry(setActivity, {
 						id: nanoid(),
 						label: 'Recorder error',
@@ -741,7 +831,10 @@ export const useMacroEngine = () => {
 
 	const stopRecording = useCallback(
 		async (_name?: string) => {
+			const stopViaHotkey = recorderHotkeyIntentRef.current === 'stop'
+			recorderHotkeyIntentRef.current = null
 			if (!recording) return
+			const startedViaHotkey = recordingOriginRef.current === 'hotkey'
 			try {
 				let events: MacroEvent[] = []
 				if (nativeRuntime) {
@@ -753,13 +846,16 @@ export const useMacroEngine = () => {
 					events = mockRecording()
 				}
 
-				const sorted = [...events].sort(
+				let sorted = [...events].sort(
 					(a, b) => a.offsetMs - b.offsetMs
 				)
-				const sanitized = stripRecorderHotkeyTail(
-					sorted,
-					recorderHotkey
-				)
+				if (startedViaHotkey) {
+					sorted = stripRecorderHotkeyHead(sorted, recorderHotkey)
+				}
+				sorted = removeRecorderHotkeyCombos(sorted, recorderHotkey)
+				const sanitized = stopViaHotkey
+					? stripRecorderHotkeyTail(sorted, recorderHotkey)
+					: sorted
 				if (!sanitized.length) {
 					setStatusText('No events captured')
 					pushEntry(setActivity, {
@@ -790,6 +886,7 @@ export const useMacroEngine = () => {
 				})
 			} finally {
 				setRecording(false)
+				recordingOriginRef.current = null
 			}
 		},
 		[nativeRuntime, recorderHotkey, recording]
@@ -809,6 +906,9 @@ export const useMacroEngine = () => {
 								return
 							}
 							recorderHotkeyHeldRef.current = false
+							recorderHotkeyIntentRef.current = recording
+								? 'stop'
+								: 'start'
 							if (recording) {
 								await stopRecording()
 							} else {
@@ -1418,10 +1518,10 @@ export const useMacroEngine = () => {
 				prev.map((macro) =>
 					macro.id === id
 						? {
-							...macro,
-							playbackSpeed: nextSpeed,
-						}
-					: macro
+								...macro,
+								playbackSpeed: nextSpeed,
+						  }
+						: macro
 				)
 			)
 			pushEntry(setActivity, {
