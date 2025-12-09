@@ -131,6 +131,13 @@ select:focus-visible {
   outline-offset: 3px;
 }
 
+button[data-focus-silent]:focus-visible,
+input[data-focus-silent]:focus-visible,
+select[data-focus-silent]:focus-visible {
+	outline: none !important;
+	outline-offset: 0 !important;
+}
+
 .text-white {
   color: var(--text-strong) !important;
 }

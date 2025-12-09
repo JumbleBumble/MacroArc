@@ -1,8 +1,10 @@
-import { motion } from 'framer-motion';
-import { Activity, Circle, PauseCircle, PlayCircle } from 'lucide-react';
-import { MacroEvent } from '../../utils/macroTypes';
-import { formatMilliseconds } from '../../utils/format';
+import { AnimatePresence, motion } from 'framer-motion'
+import { Activity, Circle, PauseCircle, PlayCircle } from 'lucide-react'
+import { MacroEvent } from '../../utils/macroTypes'
+import { formatMilliseconds } from '../../utils/format'
 import { HotkeyField } from '../shared/HotkeyField'
+import { PanelSurface } from '../shared/PanelSurface'
+import { SectionHeader } from '../shared/SectionHeader'
 
 interface MacroRecorderPanelProps {
 	recording: boolean
@@ -60,39 +62,43 @@ export const MacroRecorderPanel: React.FC<MacroRecorderPanelProps> = ({
 		recording ? onStop(captureName) : onStart(captureName)
 
 	return (
-		<section className="glass-panel flex h-full flex-col rounded-3xl p-6">
-			<div className="flex items-center justify-between">
-				<div>
-					<p className="text-xs uppercase tracking-[0.4em] text-white/50">
-						Recorder
-					</p>
-					<h2 className="text-2xl font-semibold text-white">
-						Macro capture
-					</h2>
-				</div>
-				<Activity
-					size={22}
-					className={
-						recording
-							? 'text-brand-accent animate-pulse'
-							: 'text-white/50'
-					}
-				/>
-			</div>
+		<PanelSurface className="flex h-full flex-col gap-6">
+			<SectionHeader
+				eyebrow="Recorder"
+				title="Macro capture"
+				trailing={
+					<Activity
+						size={22}
+						className={
+							recording
+								? 'text-brand-accent animate-pulse'
+								: 'text-white/50'
+						}
+					/>
+				}
+			/>
 
-			<div className="mt-6 flex flex-col gap-3">
+			<div className="flex flex-col gap-3">
 				<label className="text-xs uppercase tracking-[0.4em] text-white/50">
 					Session label
 				</label>
-				<input
+				<motion.input
 					value={captureName}
 					onChange={(event) => setCaptureName(event.target.value)}
 					placeholder="Name this capture"
 					className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white placeholder:text-white/40"
+					whileFocus={{
+						borderColor: 'rgba(142,103,255,0.6)',
+						boxShadow: '0 0 30px rgba(142,103,255,0.25)',
+					}}
 				/>
 			</div>
 
-			<div className="mt-6 flex flex-col rounded-2xl border border-white/10 bg-white/5 p-4">
+			<motion.div
+				className="flex flex-col rounded-2xl border border-white/10 bg-white/5 p-4"
+				initial={{ opacity: 0, y: 10 }}
+				animate={{ opacity: 1, y: 0 }}
+			>
 				<span className="text-sm uppercase tracking-[0.5em] text-white/50">
 					Status
 				</span>
@@ -104,63 +110,72 @@ export const MacroRecorderPanel: React.FC<MacroRecorderPanelProps> = ({
 						? 'Listening globally'
 						: 'Ready to capture input'}
 				</p>
-			</div>
+			</motion.div>
 
-			<div className="mt-6">
-				<HotkeyField
-					label="Recorder hotkey"
-					value={recorderHotkey}
-					onChange={onUpdateRecorderHotkey}
-					helper="Toggle recording anywhere. Leave empty to disable the shortcut."
-					placeholder="CommandOrControl+Shift+M"
-				/>
-			</div>
+			<HotkeyField
+				label="Recorder hotkey"
+				value={recorderHotkey}
+				onChange={onUpdateRecorderHotkey}
+				helper="Toggle recording anywhere. Leave empty to disable the shortcut."
+				placeholder="CommandOrControl+Shift+M"
+			/>
 
-			{hasPendingCapture && (
-				<div className="mt-6 rounded-2xl border border-brand-primary/40 bg-brand-primary/10 p-4">
-					<div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-						<div>
-							<p className="text-xs uppercase tracking-[0.4em] text-brand-secondary">
-								Capture ready
-							</p>
-							<p className="text-sm text-white/80">
-								{pendingCaptureMetrics.count} events ·{' '}
-								{formatMilliseconds(
-									pendingCaptureMetrics.duration
-								)}
-							</p>
+			<AnimatePresence initial={false}>
+				{hasPendingCapture && (
+					<motion.div
+						initial={{ opacity: 0, y: 16 }}
+						animate={{ opacity: 1, y: 0 }}
+						exit={{ opacity: 0, y: -10 }}
+						className="rounded-2xl border border-brand-primary/40 bg-brand-primary/10 p-4"
+					>
+						<div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+							<div>
+								<p className="text-xs uppercase tracking-[0.4em] text-brand-secondary">
+									Capture ready
+								</p>
+								<p className="text-sm text-white/80">
+									{pendingCaptureMetrics.count} events ·{' '}
+									{formatMilliseconds(
+										pendingCaptureMetrics.duration
+									)}
+								</p>
+							</div>
+							<div className="flex flex-wrap gap-2">
+								<motion.button
+									whileTap={{ scale: 0.97 }}
+									onClick={() => onSaveCapture(captureName)}
+									className="rounded-2xl bg-brand-primary/80 px-4 py-2 text-sm font-semibold text-white"
+								>
+									Save to library
+								</motion.button>
+								<motion.button
+									whileTap={{ scale: 0.97 }}
+									onClick={onPlayPending}
+									className="rounded-2xl border border-white/20 px-4 py-2 text-sm text-white/80"
+								>
+									Play once
+								</motion.button>
+								<motion.button
+									whileTap={{ scale: 0.97 }}
+									onClick={onDiscardCapture}
+									className="rounded-2xl border border-white/10 px-4 py-2 text-sm text-white/60"
+								>
+									Discard
+								</motion.button>
+							</div>
 						</div>
-						<div className="flex flex-wrap gap-2">
-							<button
-								onClick={() => onSaveCapture(captureName)}
-								className="rounded-2xl bg-brand-primary/80 px-4 py-2 text-sm font-semibold text-white"
-							>
-								Save to library
-							</button>
-							<button
-								onClick={onPlayPending}
-								className="rounded-2xl border border-white/20 px-4 py-2 text-sm text-white/80"
-							>
-								Play once
-							</button>
-							<button
-								onClick={onDiscardCapture}
-								className="rounded-2xl border border-white/10 px-4 py-2 text-sm text-white/60"
-							>
-								Discard
-							</button>
-						</div>
-					</div>
-				</div>
-			)}
+					</motion.div>
+				)}
+			</AnimatePresence>
 
 			<motion.button
 				whileTap={{ scale: 0.97 }}
+				whileHover={{ scale: recording ? 1.01 : 1.03 }}
 				onClick={handleToggle}
-				className={`mt-6 flex items-center justify-center gap-3 rounded-2xl px-6 py-4 text-lg font-semibold text-white ${
+				className={`flex items-center justify-center gap-3 rounded-2xl px-6 py-4 text-lg font-semibold text-white ${
 					recording
 						? 'bg-red-500/80 shadow-[0_0_25px_rgba(244,63,94,0.45)]'
-						: 'bg-brand-primary/70'
+						: 'bg-brand-primary/70 shadow-[0_15px_35px_rgba(91,124,250,0.15)]'
 				}`}
 			>
 				{recording ? (
@@ -171,38 +186,48 @@ export const MacroRecorderPanel: React.FC<MacroRecorderPanelProps> = ({
 				{recording ? 'Stop recording' : 'Start recording'}
 			</motion.button>
 
-			<div className="mt-6 flex flex-col gap-3">
+			<div className="flex flex-col gap-3">
 				<div className="flex items-center justify-between text-xs uppercase tracking-[0.4em] text-white/50">
 					<span>Live event stream</span>
 					<span>{recentEvents.length} events</span>
 				</div>
 				<div className="flex flex-col gap-2">
-					{recentEvents.slice(0, 6).map((event) => (
-						<div
-							key={event.id}
-							className="flex items-center justify-between rounded-xl border border-white/5 bg-white/5 px-3 py-2"
-						>
-							<div className="flex items-center gap-3">
-								<Circle
-									size={10}
-									className="text-brand-secondary"
-								/>
-								<span className="text-sm text-white/80">
-									{eventBadge(event)}
+					<AnimatePresence initial={false}>
+						{recentEvents.slice(0, 6).map((event) => (
+							<motion.div
+								layout
+								key={event.id}
+								initial={{ opacity: 0, y: 10 }}
+								animate={{ opacity: 1, y: 0 }}
+								exit={{ opacity: 0, y: -10 }}
+								className="flex items-center justify-between rounded-xl border border-white/5 bg-white/5 px-3 py-2"
+							>
+								<div className="flex items-center gap-3">
+									<Circle
+										size={10}
+										className="text-brand-secondary"
+									/>
+									<span className="text-sm text-white/80">
+										{eventBadge(event)}
+									</span>
+								</div>
+								<span className="text-xs text-white/50">
+									{formatMilliseconds(event.offsetMs)}
 								</span>
-							</div>
-							<span className="text-xs text-white/50">
-								{formatMilliseconds(event.offsetMs)}
-							</span>
-						</div>
-					))}
+							</motion.div>
+						))}
+					</AnimatePresence>
 					{!recentEvents.length && (
-						<p className="rounded-xl border border-dashed border-white/10 px-4 py-6 text-center text-sm text-white/50">
+						<motion.p
+							initial={{ opacity: 0 }}
+							animate={{ opacity: 1 }}
+							className="rounded-xl border border-dashed border-white/10 px-4 py-6 text-center text-sm text-white/50"
+						>
 							Events will populate as soon as recording starts.
-						</p>
+						</motion.p>
 					)}
 				</div>
 			</div>
-		</section>
+		</PanelSurface>
 	)
 }
