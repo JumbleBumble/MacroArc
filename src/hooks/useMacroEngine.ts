@@ -248,6 +248,48 @@ const sanitizeMacroEvent = (event: MacroEvent): MacroEvent => {
 const sanitizeMacroEventList = (events: MacroEvent[]) =>
 	[...events].map(sanitizeMacroEvent).sort((a, b) => a.offsetMs - b.offsetMs)
 
+const SCROLL_DELTA_MODE_NATIVE: MacroSequence['scrollDeltaMode'] = 'native'
+
+const normalizeScrollEvent = (event: MacroEvent): MacroEvent => {
+	if (event.kind.type !== 'scroll') {
+		return event
+	}
+	return {
+		...event,
+		kind: {
+			...event.kind,
+			delta_x: -event.kind.delta_x,
+			delta_y: -event.kind.delta_y,
+		},
+	}
+}
+
+const normalizeScrollEvents = (events: MacroEvent[]) =>
+	events.map((event) =>
+		event.kind.type === 'scroll' ? normalizeScrollEvent(event) : event
+	)
+
+const shouldNormalizeMacroScrolls = (
+	macro: MacroSequence | null | undefined
+) => {
+	if (!macro || macro.scrollDeltaMode === SCROLL_DELTA_MODE_NATIVE) {
+		return false
+	}
+	if (!Array.isArray(macro.tags) || !macro.tags.includes('capture')) {
+		return false
+	}
+	return macro.events.some((event) => event.kind.type === 'scroll')
+}
+
+const normalizeMacroScrolls = (macro: MacroSequence) =>
+	shouldNormalizeMacroScrolls(macro)
+		? {
+				...macro,
+				events: normalizeScrollEvents(macro.events),
+				scrollDeltaMode: SCROLL_DELTA_MODE_NATIVE,
+		  }
+		: macro
+
 const HOTKEY_TOKEN_ALIASES: Record<string, string[]> = {
 	commandorcontrol: ['command', 'cmd', 'meta', 'control', 'ctrl'],
 	command: ['command', 'cmd', 'meta'],
@@ -536,16 +578,21 @@ export const useMacroEngine = () => {
 				const raw = await readTextFile(path)
 				const parsed = parseStoredMacros(raw)
 				if (!cancelled && parsed) {
-					const normalized = parsed.map((macro) => ({
-						...macro,
-						hotkey: macro.hotkey ?? null,
-						loopEnabled: Boolean(macro.loopEnabled),
-						loopDelayMs: clampLoopDelay(
-							macro.loopDelayMs ?? DEFAULT_LOOP_DELAY_MS,
-							DEFAULT_LOOP_DELAY_MS
-						),
-						playbackSpeed: clampPlaybackSpeed(macro.playbackSpeed),
-					}))
+					const normalized = parsed.map((macro) => {
+						const aligned = normalizeMacroScrolls(macro)
+						return {
+							...aligned,
+							hotkey: aligned.hotkey ?? null,
+							loopEnabled: Boolean(aligned.loopEnabled),
+							loopDelayMs: clampLoopDelay(
+								aligned.loopDelayMs ?? DEFAULT_LOOP_DELAY_MS,
+								DEFAULT_LOOP_DELAY_MS
+							),
+							playbackSpeed: clampPlaybackSpeed(
+								aligned.playbackSpeed
+							),
+						}
+					})
 					setMacros(normalized)
 					setSelectedMacroId((current) => {
 						if (
@@ -846,6 +893,8 @@ export const useMacroEngine = () => {
 					events = mockRecording()
 				}
 
+				events = normalizeScrollEvents(events)
+
 				let sorted = [...events].sort(
 					(a, b) => a.offsetMs - b.offsetMs
 				)
@@ -964,6 +1013,7 @@ export const useMacroEngine = () => {
 			events,
 			lastRun: Date.now(),
 			hotkey: null,
+			scrollDeltaMode: SCROLL_DELTA_MODE_NATIVE,
 		}),
 		[captureName]
 	)

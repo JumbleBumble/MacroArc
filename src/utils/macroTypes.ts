@@ -18,17 +18,18 @@ export interface MacroEvent {
 }
 
 export interface MacroSequence {
-  id: string;
-  name: string;
-  accent: string;
-  tags: string[];
-  loopCount: number;
-  loopEnabled?: boolean;
-  loopDelayMs?: number;
-  playbackSpeed?: number;
-  events: MacroEvent[];
-  lastRun?: number;
-  hotkey?: string | null;
+	id: string
+	name: string
+	accent: string
+	tags: string[]
+	loopCount: number
+	loopEnabled?: boolean
+	loopDelayMs?: number
+	playbackSpeed?: number
+	events: MacroEvent[]
+	lastRun?: number
+	hotkey?: string | null
+	scrollDeltaMode?: 'legacy' | 'native'
 }
 
 export interface MacroStats {

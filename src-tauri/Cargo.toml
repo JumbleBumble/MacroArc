@@ -35,3 +35,6 @@ schemars = { path = "../vendor/schemars-0.8.22" }
 [target.'cfg(windows)'.dependencies]
 device_query = "1.1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri = { version = "2", features = ["macos-private-api"] }
+
