@@ -12,11 +12,62 @@
 	"app": {
 		"windows": [
 			{
+				"label": "main",
 				"title": "MacroArc",
 				"width": 800,
 				"height": 700,
 				"minWidth": 700,
 				"minHeight": 600
+			},
+			{
+				"label": "overlay-recorder",
+				"title": "Overlay · Recorder",
+				"url": "/?overlayPanel=recorder",
+				"visible": false,
+				"decorations": false,
+				"resizable": true,
+				"transparent": true,
+				"alwaysOnTop": true
+			},
+			{
+				"label": "overlay-autoclicker",
+				"title": "Overlay · Auto Clicker",
+				"url": "/?overlayPanel=autoclicker",
+				"visible": false,
+				"decorations": false,
+				"resizable": true,
+				"transparent": true,
+				"alwaysOnTop": true
+			},
+			{
+				"label": "overlay-library",
+				"title": "Overlay · Library",
+				"url": "/?overlayPanel=library",
+				"visible": false,
+				"decorations": false,
+				"resizable": true,
+				"transparent": true,
+				"alwaysOnTop": true
+			},
+			{
+				"label": "overlay-activity",
+				"title": "Overlay · Activity",
+				"url": "/?overlayPanel=activity",
+				"visible": false,
+				"decorations": false,
+				"resizable": true,
+				"transparent": true,
+				"alwaysOnTop": true
+			},
+			{
+				"label": "overlay-insights",
+				"title": "Overlay · Insights",
+				"url": "/?overlayPanel=insights",
+				"visible": false,
+				"decorations": false,
+				"resizable": true,
+				"transparent": true,
+				"alwaysOnTop": true
 			}
 		],
 		"security": {

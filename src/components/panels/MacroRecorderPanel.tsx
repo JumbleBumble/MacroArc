@@ -191,40 +191,59 @@ export const MacroRecorderPanel: React.FC<MacroRecorderPanelProps> = ({
 					<span>Live event stream</span>
 					<span>{recentEvents.length} events</span>
 				</div>
-				<div className="flex flex-col gap-2">
-					<AnimatePresence initial={false}>
-						{recentEvents.slice(0, 6).map((event) => (
-							<motion.div
-								layout
-								key={event.id}
-								initial={{ opacity: 0, y: 10 }}
-								animate={{ opacity: 1, y: 0 }}
-								exit={{ opacity: 0, y: -10 }}
-								className="flex items-center justify-between rounded-xl border border-white/5 bg-white/5 px-3 py-2"
-							>
-								<div className="flex items-center gap-3">
-									<Circle
-										size={10}
-										className="text-brand-secondary"
-									/>
-									<span className="text-sm text-white/80">
-										{eventBadge(event)}
-									</span>
-								</div>
-								<span className="text-xs text-white/50">
-									{formatMilliseconds(event.offsetMs)}
-								</span>
-							</motion.div>
-						))}
-					</AnimatePresence>
-					{!recentEvents.length && (
+				<div className="flex max-h-64 flex-col gap-2 overflow-hidden">
+					{recording ? (
 						<motion.p
 							initial={{ opacity: 0 }}
 							animate={{ opacity: 1 }}
 							className="rounded-xl border border-dashed border-white/10 px-4 py-6 text-center text-sm text-white/50"
 						>
-							Events will populate as soon as recording starts.
+							Live events will appear once you stop recording.
 						</motion.p>
+					) : (
+						<>
+							<AnimatePresence initial={false} mode="popLayout">
+								{recentEvents.slice(0, 6).map((event) => (
+									<motion.div
+										layout="position"
+										key={event.id}
+										initial={{ opacity: 0, y: 10 }}
+										animate={{ opacity: 1, y: 0 }}
+										exit={{ opacity: 0, y: -6 }}
+										transition={{
+											duration: 0.14,
+											ease: 'easeOut',
+										}}
+										className="flex items-center justify-between rounded-xl border border-white/5 bg-white/5 px-3 py-2"
+									>
+										<div className="flex items-center gap-3">
+											<Circle
+												size={10}
+												className="text-brand-secondary"
+											/>
+											<span className="text-sm text-white/80">
+												{eventBadge(event)}
+											</span>
+										</div>
+										<span className="text-xs text-white/50">
+											{formatMilliseconds(
+												event.offsetMs
+											)}
+										</span>
+									</motion.div>
+								))}
+							</AnimatePresence>
+							{!recentEvents.length && (
+								<motion.p
+									initial={{ opacity: 0 }}
+									animate={{ opacity: 1 }}
+									className="rounded-xl border border-dashed border-white/10 px-4 py-6 text-center text-sm text-white/50"
+								>
+									Events will populate after your next
+									recording.
+								</motion.p>
+							)}
+						</>
 					)}
 				</div>
 			</div>

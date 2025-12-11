@@ -1,9 +1,16 @@
 {
-  "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
-  "permissions": [
+	"$schema": "../gen/schemas/desktop-schema.json",
+	"identifier": "default",
+	"description": "Capability for the main window",
+	"windows": [
+		"main",
+		"overlay-recorder",
+		"overlay-autoclicker",
+		"overlay-library",
+		"overlay-activity",
+		"overlay-insights"
+	],
+	"permissions": [
 		"core:default",
 		"opener:default",
 		"fs:default",
@@ -13,6 +20,12 @@
 		"global-shortcut:allow-is-registered",
 		"global-shortcut:allow-unregister",
 		"global-shortcut:allow-register",
-    "global-shortcut:default"
-  ]
+		"global-shortcut:default",
+		"core:window:allow-hide",
+		"core:window:allow-show",
+		"core:window:allow-create",
+		"core:window:allow-start-dragging",
+		"core:window:allow-minimize",
+		"core:window:allow-set-always-on-top"
+	]
 }

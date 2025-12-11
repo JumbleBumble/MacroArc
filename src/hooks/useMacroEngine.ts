@@ -1,166 +1,124 @@
 import { Dispatch, SetStateAction, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { listen } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
-import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
-import { register, unregister } from '@tauri-apps/plugin-global-shortcut';
-import { nanoid } from 'nanoid';
+import { emit, listen } from '@tauri-apps/api/event'
+import { invoke } from '@tauri-apps/api/core'
+import { register, unregister } from '@tauri-apps/plugin-global-shortcut'
+import { getCurrentWindow } from '@tauri-apps/api/window'
+import { nanoid } from 'nanoid'
 import {
 	ActivityEntry,
 	MacroEvent,
 	MacroEventWire,
 	MacroSequence,
 	MacroStats,
-	MouseButton,
 	DEFAULT_MACRO_SPEED,
-	MIN_MACRO_SPEED,
-	MAX_MACRO_SPEED,
 	fromWireEvent,
 	toWireEvent,
-} from '../utils/macroTypes';
-import { isTauri } from '../utils/bridge';
-import { getAppLocalDataPath } from '../utils/storage';
+} from '../utils/macroTypes'
+import { isOverlayPanelWindow, isTauri } from '../utils/bridge'
+import {
+	CAPTURE_READY_CHANNEL,
+	DEFAULT_LOOP_DELAY_MS,
+	DEFAULT_QUEUE_HOTKEY,
+	DEFAULT_QUEUE_LOOP_DELAY_MS,
+	MACRO_RECORD_SHORTCUT,
+	MACRO_SYNC_CHANNEL,
+	QUEUE_HOTKEY_CHANNEL,
+	QUEUE_STATE_CHANNEL,
+	QUEUE_STATE_REQUEST_CHANNEL,
+	RECENT_EVENT_LIMIT,
+	SCROLL_DELTA_MODE_NATIVE,
+} from './macroEngine/constants'
+import {
+	clampLoopDelay,
+	clampPlaybackSpeed,
+	wait,
+} from './macroEngine/helpers'
+import {
+	normalizeScrollEvents,
+	sanitizeMacroEventList,
+} from './macroEngine/eventTransforms'
+import {
+	removeRecorderHotkeyCombos,
+	stripRecorderHotkeyHead,
+	stripRecorderHotkeyTail,
+} from './macroEngine/hotkeyUtils'
+import {
+	hydrateStoredMacros,
+	loadHotkeySettings,
+	loadStoredMacros,
+	persistHotkeySettings,
+	persistStoredMacros,
+} from './macroEngine/storage'
 
 const mockRecording = (): MacroEvent[] => {
-  const now = Date.now();
-  return [
-    {
-      id: nanoid(),
-      offsetMs: 40,
-      kind: { type: 'mouse-move', x: 420, y: 420 },
-      createdAt: now,
-    },
-    {
-      id: nanoid(),
-      offsetMs: 125,
-      kind: { type: 'mouse-down', button: 'left' },
-      createdAt: now,
-    },
-    {
-      id: nanoid(),
-      offsetMs: 210,
-      kind: { type: 'mouse-up', button: 'left' },
-      createdAt: now,
-    },
-    {
-      id: nanoid(),
-      offsetMs: 300,
-      kind: { type: 'key-down', key: 'Ctrl+V' },
-      createdAt: now,
-    },
-    {
-      id: nanoid(),
-      offsetMs: 380,
-      kind: { type: 'key-up', key: 'Ctrl+V' },
-      createdAt: now,
-    },
-  ];
-};
-
-const STORAGE_FILENAME = 'macroarc.macros.json';
-const HOTKEYS_FILENAME = 'macroarc.hotkeys.json'
-const LEGACY_QUEUE_HOTKEY_FILENAME = 'macroarc.queue.hotkey.json'
-const LEGACY_RECORDER_HOTKEY_FILENAME = 'macroarc.recorder.hotkey.json'
-const MACRO_RECORD_SHORTCUT = 'CommandOrControl+Shift+M'
-const DEFAULT_QUEUE_HOTKEY = 'CommandOrControl+Shift+Q'
-const DEFAULT_LOOP_DELAY_MS = 1000
-const DEFAULT_QUEUE_LOOP_DELAY_MS = 1500
-const MIN_LOOP_DELAY_MS = 0
-const RECORDER_HOTKEY_HEAD_WINDOW_MS = 200
-const RECORDER_HOTKEY_TAIL_WINDOW_MS = 300
+	const now = Date.now()
+	return [
+		{
+			id: nanoid(),
+			offsetMs: 40,
+			kind: { type: 'mouse-move', x: 420, y: 420 },
+			createdAt: now,
+		},
+		{
+			id: nanoid(),
+			offsetMs: 125,
+			kind: { type: 'mouse-down', button: 'left' },
+			createdAt: now,
+		},
+		{
+			id: nanoid(),
+			offsetMs: 210,
+			kind: { type: 'mouse-up', button: 'left' },
+			createdAt: now,
+		},
+		{
+			id: nanoid(),
+			offsetMs: 300,
+			kind: { type: 'key-down', key: 'Ctrl+V' },
+			createdAt: now,
+		},
+		{
+			id: nanoid(),
+			offsetMs: 380,
+			kind: { type: 'key-up', key: 'Ctrl+V' },
+			createdAt: now,
+		},
+	]
+}
 
 type PlaybackStatusPayload = {
 	context_id?: string | null
 	state: 'finished' | 'stopped' | string
 }
 
-const clampLoopDelay = (value: number | undefined, fallback: number) => {
-	if (typeof value !== 'number' || Number.isNaN(value)) {
-		return fallback
-	}
-	return Math.max(MIN_LOOP_DELAY_MS, value)
+type CaptureBroadcastPayload = {
+	source: string
+	events: MacroEvent[]
+	preview?: MacroEvent[]
+	captureName?: string | null
+	eventCount?: number
 }
 
-const clampPlaybackSpeed = (value: number | undefined) => {
-	if (typeof value !== 'number' || Number.isNaN(value)) {
-		return DEFAULT_MACRO_SPEED
-	}
-	return Math.min(MAX_MACRO_SPEED, Math.max(MIN_MACRO_SPEED, value))
+type MacroSyncPayload = {
+	source?: string
+	macros?: MacroSequence[]
 }
 
-const wait = (ms: number) =>
-	new Promise<void>((resolve) => setTimeout(resolve, ms))
-
-const parseStoredMacros = (raw: string | null): MacroSequence[] | null => {
-	if (!raw) return null
-	try {
-		const parsed = JSON.parse(raw) as MacroSequence[]
-		return Array.isArray(parsed) ? parsed : null
-	} catch (error) {
-		console.warn('macro cache invalid', error)
-		return null
-	}
+type QueueStateBroadcastPayload = {
+	source?: string
+	queue?: string[]
+	loopEnabled?: boolean
+	loopDelayMs?: number
+	running?: boolean
 }
 
-type HotkeySettings = {
-	queueHotkey?: string | null
-	recorderHotkey?: string | null
+type QueueHotkeyBroadcastPayload = {
+	source?: string
+	hotkey?: string | null
 }
 
-const normalizeHotkeyValue = (value: unknown): string | null | undefined => {
-	if (typeof value === 'string') {
-		const trimmed = value.trim()
-		return trimmed.length ? trimmed : null
-	}
-	if (value === null) {
-		return null
-	}
-	return undefined
-}
-
-const parseHotkeysFile = (raw: string | null): HotkeySettings | null => {
-	if (!raw) return null
-	try {
-		const parsed = JSON.parse(raw) as Partial<HotkeySettings>
-		const result: HotkeySettings = {}
-		const queueValue = normalizeHotkeyValue(parsed.queueHotkey)
-		const recorderValue = normalizeHotkeyValue(parsed.recorderHotkey)
-		if (queueValue !== undefined) {
-			result.queueHotkey = queueValue
-		}
-		if (recorderValue !== undefined) {
-			result.recorderHotkey = recorderValue
-		}
-		return result
-	} catch (error) {
-		console.warn('hotkey cache invalid', error)
-		return null
-	}
-}
-
-const readLegacyHotkeyFile = async (
-	filename: string
-): Promise<string | null | undefined> => {
-	try {
-		const path = await getAppLocalDataPath(filename)
-		const raw = await readTextFile(path)
-		const parsed = JSON.parse(raw) as { hotkey?: string | null } | null
-		return normalizeHotkeyValue(parsed?.hotkey)
-	} catch (error) {
-		if (!isMissingFileError(error)) {
-			console.warn(`legacy hotkey file read failed (${filename})`, error)
-		}
-		return undefined
-	}
-}
-
-const isMissingFileError = (error: unknown) => {
-	const message = `${error ?? ''}`.toLowerCase()
-	return (
-		message.includes('not found') ||
-		message.includes('no such file') ||
-		message.includes('os error 2') ||
-		message.includes('enoent')
-	)
+type QueueStateRequestPayload = {
+	source?: string
 }
 
 const pushEntry = (
@@ -178,267 +136,11 @@ const estimateMacroDurationMs = (
 	return (lastOffset / speed) * loops
 }
 
-const VALID_MOUSE_BUTTONS: MouseButton[] = [
-	'left',
-	'right',
-	'middle',
-	'unknown',
-]
-
-const ensureNumber = (value: unknown, fallback = 0) => {
-	const parsed = Number(value)
-	return Number.isFinite(parsed) ? parsed : fallback
-}
-
-const sanitizeMacroEvent = (event: MacroEvent): MacroEvent => {
-	const offset = Math.max(0, Math.round(ensureNumber(event.offsetMs, 0)))
-	switch (event.kind.type) {
-		case 'mouse-move':
-			return {
-				...event,
-				offsetMs: offset,
-				kind: {
-					type: 'mouse-move',
-					x: Math.round(ensureNumber(event.kind.x, 0)),
-					y: Math.round(ensureNumber(event.kind.y, 0)),
-				},
-			}
-		case 'mouse-down':
-		case 'mouse-up': {
-			const button = VALID_MOUSE_BUTTONS.includes(event.kind.button)
-				? event.kind.button
-				: 'unknown'
-			return {
-				...event,
-				offsetMs: offset,
-				kind: {
-					type: event.kind.type,
-					button,
-				},
-			}
-		}
-		case 'key-down':
-		case 'key-up': {
-			const key =
-				typeof event.kind.key === 'string' ? event.kind.key.trim() : ''
-			return {
-				...event,
-				offsetMs: offset,
-				kind: {
-					type: event.kind.type,
-					key,
-				},
-			}
-		}
-		case 'scroll':
-			return {
-				...event,
-				offsetMs: offset,
-				kind: {
-					type: 'scroll',
-					delta_x: ensureNumber(event.kind.delta_x, 0),
-					delta_y: ensureNumber(event.kind.delta_y, 0),
-				},
-			}
-		default:
-			return { ...event, offsetMs: offset }
-	}
-}
-
-const sanitizeMacroEventList = (events: MacroEvent[]) =>
-	[...events].map(sanitizeMacroEvent).sort((a, b) => a.offsetMs - b.offsetMs)
-
-const SCROLL_DELTA_MODE_NATIVE: MacroSequence['scrollDeltaMode'] = 'native'
-
-const normalizeScrollEvent = (event: MacroEvent): MacroEvent => {
-	if (event.kind.type !== 'scroll') {
-		return event
-	}
-	return {
-		...event,
-		kind: {
-			...event.kind,
-			delta_x: -event.kind.delta_x,
-			delta_y: -event.kind.delta_y,
-		},
-	}
-}
-
-const normalizeScrollEvents = (events: MacroEvent[]) =>
-	events.map((event) =>
-		event.kind.type === 'scroll' ? normalizeScrollEvent(event) : event
-	)
-
-const shouldNormalizeMacroScrolls = (
-	macro: MacroSequence | null | undefined
-) => {
-	if (!macro || macro.scrollDeltaMode === SCROLL_DELTA_MODE_NATIVE) {
-		return false
-	}
-	if (!Array.isArray(macro.tags) || !macro.tags.includes('capture')) {
-		return false
-	}
-	return macro.events.some((event) => event.kind.type === 'scroll')
-}
-
-const normalizeMacroScrolls = (macro: MacroSequence) =>
-	shouldNormalizeMacroScrolls(macro)
-		? {
-				...macro,
-				events: normalizeScrollEvents(macro.events),
-				scrollDeltaMode: SCROLL_DELTA_MODE_NATIVE,
-		  }
-		: macro
-
-const HOTKEY_TOKEN_ALIASES: Record<string, string[]> = {
-	commandorcontrol: ['command', 'cmd', 'meta', 'control', 'ctrl'],
-	command: ['command', 'cmd', 'meta'],
-	cmd: ['command', 'cmd', 'meta'],
-	control: ['control', 'ctrl'],
-	ctrl: ['control', 'ctrl'],
-	alt: ['alt'],
-	option: ['alt'],
-	shift: ['shift'],
-	meta: ['meta', 'command', 'cmd'],
-	super: ['meta', 'super'],
-}
-
-const normalizeHotkeySegment = (value: string) => {
-	let normalized = value.trim().toLowerCase()
-	if (normalized.length > 4) {
-		if (normalized.endsWith('left')) {
-			normalized = normalized.slice(0, -4)
-		} else if (normalized.endsWith('right')) {
-			normalized = normalized.slice(0, -5)
-		}
-	}
-	return normalized
-}
-
-type HotkeyMatcher = {
-	aliasSet: Set<string>
-	canonicalTokens: string[]
-}
-
-const buildHotkeyMatcher = (combo: string | null): HotkeyMatcher | null => {
-	if (!combo?.length) return null
-	const canonicalTokens = combo
-		.split('+')
-		.map(normalizeHotkeySegment)
-		.filter(Boolean)
-	if (!canonicalTokens.length) return null
-	const aliasSet = new Set<string>()
-	canonicalTokens.forEach((token) => {
-		const aliases = HOTKEY_TOKEN_ALIASES[token] ?? [token]
-		aliases.forEach((alias) => aliasSet.add(alias))
-	})
-	return { aliasSet, canonicalTokens }
-}
-
-const getEventHotkeyTokens = (event: MacroEvent) => {
-	if (event.kind.type !== 'key-down' && event.kind.type !== 'key-up') {
-		return null
-	}
-	const keyLabel = (event.kind as { key?: string }).key
-	if (typeof keyLabel !== 'string') {
-		return null
-	}
-	const tokens = keyLabel
-		.split('+')
-		.map(normalizeHotkeySegment)
-		.filter(Boolean)
-	return tokens.length ? tokens : null
-}
-
-const isRecorderHotkeyEvent = (event: MacroEvent, matcher: HotkeyMatcher) => {
-	const tokens = getEventHotkeyTokens(event)
-	if (!tokens?.length) {
-		return false
-	}
-	return tokens.every((token) => matcher.aliasSet.has(token))
-}
-
-const isExactRecorderHotkeyEvent = (
-	event: MacroEvent,
-	matcher: HotkeyMatcher
-) => {
-	const tokens = getEventHotkeyTokens(event)
-	if (!tokens?.length) {
-		return false
-	}
-	if (tokens.length !== matcher.canonicalTokens.length) {
-		return false
-	}
-	return tokens.every((token) => matcher.aliasSet.has(token))
-}
-
-const stripRecorderHotkeyHead = (
-	events: MacroEvent[],
-	hotkey: string | null
-): MacroEvent[] => {
-	const matcher = buildHotkeyMatcher(hotkey)
-	if (!matcher || !events.length) return events
-	let startIndex = 0
-	while (startIndex < events.length) {
-		const candidate = events[startIndex]
-		if (candidate.offsetMs > RECORDER_HOTKEY_HEAD_WINDOW_MS) {
-			break
-		}
-		if (!isRecorderHotkeyEvent(candidate, matcher)) {
-			break
-		}
-		startIndex += 1
-	}
-	if (!startIndex) {
-		return events
-	}
-	if (startIndex >= events.length) {
-		return []
-	}
-	const baseline = events[startIndex].offsetMs ?? 0
-	return events.slice(startIndex).map((event) => ({
-		...event,
-		offsetMs: Math.max(0, event.offsetMs - baseline),
-	}))
-}
-
-const stripRecorderHotkeyTail = (
-	events: MacroEvent[],
-	hotkey: string | null
-): MacroEvent[] => {
-	const matcher = buildHotkeyMatcher(hotkey)
-	if (!matcher || !events.length) return events
-	const lastOffset = events[events.length - 1]?.offsetMs ?? 0
-	let cutoff = events.length
-	while (cutoff > 0) {
-		const candidate = events[cutoff - 1]
-		if (
-			lastOffset - candidate.offsetMs > RECORDER_HOTKEY_TAIL_WINDOW_MS ||
-			!isRecorderHotkeyEvent(candidate, matcher)
-		) {
-			break
-		}
-		cutoff -= 1
-	}
-	if (cutoff === events.length) {
-		return events
-	}
-	return events.slice(0, cutoff)
-}
-
-const removeRecorderHotkeyCombos = (
-	events: MacroEvent[],
-	hotkey: string | null
-): MacroEvent[] => {
-	const matcher = buildHotkeyMatcher(hotkey)
-	if (!matcher || !events.length) return events
-	return events.filter(
-		(event) => !isExactRecorderHotkeyEvent(event, matcher)
-	)
-}
-
 export const useMacroEngine = () => {
 	const nativeRuntime = isTauri()
+	const [windowLabel, setWindowLabel] = useState<string | null>(
+		nativeRuntime ? null : 'browser'
+	)
 	const [macros, setMacros] = useState<MacroSequence[]>([])
 	const [macrosHydrated, setMacrosHydrated] = useState(!nativeRuntime)
 	const [recording, setRecording] = useState(false)
@@ -469,12 +171,68 @@ export const useMacroEngine = () => {
 	const [recorderHotkeyHydrated, setRecorderHotkeyHydrated] = useState(
 		!nativeRuntime
 	)
+	const [documentVisible, setDocumentVisible] = useState(() => {
+		if (typeof document === 'undefined') {
+			return true
+		}
+		return document.visibilityState === 'visible'
+	})
+
+	useEffect(() => {
+		if (!nativeRuntime) {
+			return
+		}
+		try {
+			const current = getCurrentWindow()
+			setWindowLabel(current.label)
+		} catch (error) {
+			console.warn('window label lookup failed', error)
+			setWindowLabel('main')
+		}
+	}, [nativeRuntime])
+
+	useEffect(() => {
+		if (typeof document === 'undefined') {
+			return
+		}
+		const handleVisibility = () => {
+			setDocumentVisible(document.visibilityState === 'visible')
+		}
+		document.addEventListener('visibilitychange', handleVisibility)
+		return () => {
+			document.removeEventListener('visibilitychange', handleVisibility)
+		}
+	}, [])
+
+	const overlayPanelRuntime = useMemo(() => {
+		if (nativeRuntime) {
+			if (windowLabel === null) {
+				return null
+			}
+			return windowLabel !== 'main'
+		}
+		return isOverlayPanelWindow()
+	}, [nativeRuntime, windowLabel])
+
+	useEffect(() => {
+		if (overlayPanelRuntime === false) {
+			queueBroadcastReadyRef.current = true
+		}
+	}, [overlayPanelRuntime])
+
+	const shouldAttachRealtimeStreams =
+		overlayPanelRuntime === false || documentVisible
 	const macroHotkeyBindings = useRef<Map<string, string>>(new Map())
 	const macroHotkeyPressed = useRef<Map<string, boolean>>(new Map())
 	const recorderHotkeyHeldRef = useRef(false)
+	const recorderHotkeyResetTimerRef = useRef<ReturnType<
+		typeof setTimeout
+	> | null>(null)
 	const recorderHotkeyIntentRef = useRef<'start' | 'stop' | null>(null)
 	const recordingOriginRef = useRef<'hotkey' | 'ui' | null>(null)
+	const recorderActiveRef = useRef(false)
 	const macrosRef = useRef<MacroSequence[]>([])
+	const macrosSyncSuppressedRef = useRef(false)
 	const macroLoopTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(
 		new Map()
 	)
@@ -489,6 +247,21 @@ export const useMacroEngine = () => {
 		cancelled: false,
 	})
 	const queueHotkeyHeldRef = useRef(false)
+	const queueRef = useRef<string[]>([])
+	const queueHotkeyResetTimerRef = useRef<ReturnType<
+		typeof setTimeout
+	> | null>(null)
+	const queueStateSyncSuppressedRef = useRef(false)
+	const queueHotkeySyncSuppressedRef = useRef(false)
+	const queueBroadcastReadyRef = useRef(!nativeRuntime)
+	const lastQueueSnapshotRef = useRef<{
+		queue: string[]
+		loopEnabled: boolean
+		loopDelayMs: number
+		running: boolean
+	} | null>(null)
+	const stopInFlightRef = useRef(false)
+	const instanceIdRef = useRef(nanoid())
 	const playbackResolversRef = useRef<
 		Map<string, (payload: PlaybackStatusPayload) => void>
 	>(new Map())
@@ -546,6 +319,31 @@ export const useMacroEngine = () => {
 		[clearMacroLoopTimer, requestStopPlayback]
 	)
 
+	const broadcastCaptureReady = useCallback(
+		async (payload: {
+			events: MacroEvent[]
+			preview: MacroEvent[]
+			captureName?: string | null
+			count?: number
+		}) => {
+			if (!nativeRuntime) {
+				return
+			}
+			try {
+				await emit<CaptureBroadcastPayload>(CAPTURE_READY_CHANNEL, {
+					source: instanceIdRef.current,
+					events: payload.events,
+					preview: payload.preview,
+					captureName: payload.captureName,
+					eventCount: payload.count ?? payload.events.length,
+				})
+			} catch (error) {
+				console.warn('capture broadcast failed', error)
+			}
+		},
+		[nativeRuntime]
+	)
+
 	useEffect(() => {
 		macrosRef.current = macros
 	}, [macros])
@@ -553,6 +351,10 @@ export const useMacroEngine = () => {
 	useEffect(() => {
 		queueRunningRef.current = queueRunning
 	}, [queueRunning])
+
+	useEffect(() => {
+		queueRef.current = queue
+	}, [queue])
 
 	useEffect(() => {
 		queueLoopEnabledRef.current = queueLoopEnabled
@@ -565,6 +367,145 @@ export const useMacroEngine = () => {
 		queueLoopDelayRef.current = queueLoopDelayMs
 	}, [queueLoopDelayMs])
 
+	const emitMacroSync = useCallback(
+		async (snapshot: MacroSequence[]) => {
+			if (!nativeRuntime) {
+				return
+			}
+			try {
+				await emit<MacroSyncPayload>(MACRO_SYNC_CHANNEL, {
+					source: instanceIdRef.current,
+					macros: snapshot,
+				})
+			} catch (error) {
+				console.warn('macro sync broadcast failed', error)
+			}
+		},
+		[nativeRuntime]
+	)
+
+	const emitQueueState = useCallback(
+		async (snapshot: QueueStateBroadcastPayload) => {
+			if (!nativeRuntime) {
+				return
+			}
+			try {
+				await emit<QueueStateBroadcastPayload>(QUEUE_STATE_CHANNEL, {
+					source: instanceIdRef.current,
+					queue: snapshot.queue ?? [],
+					loopEnabled: snapshot.loopEnabled,
+					loopDelayMs: snapshot.loopDelayMs,
+					running: snapshot.running,
+				})
+			} catch (error) {
+				console.warn('queue state broadcast failed', error)
+			}
+		},
+		[nativeRuntime]
+	)
+
+	const emitQueueHotkey = useCallback(
+		async (hotkey: string | null) => {
+			if (!nativeRuntime) {
+				return
+			}
+			try {
+				await emit<QueueHotkeyBroadcastPayload>(QUEUE_HOTKEY_CHANNEL, {
+					source: instanceIdRef.current,
+					hotkey,
+				})
+			} catch (error) {
+				console.warn('queue hotkey broadcast failed', error)
+			}
+		},
+		[nativeRuntime]
+	)
+
+	useEffect(() => {
+		if (!nativeRuntime) {
+			return
+		}
+		const snapshot = {
+			queue: [...queue],
+			loopEnabled: queueLoopEnabled,
+			loopDelayMs: queueLoopDelayMs,
+			running: queueRunning,
+		}
+		const previous = lastQueueSnapshotRef.current
+		if (queueStateSyncSuppressedRef.current) {
+			queueStateSyncSuppressedRef.current = false
+			lastQueueSnapshotRef.current = snapshot
+			return
+		}
+		if (!queueBroadcastReadyRef.current) {
+			lastQueueSnapshotRef.current = snapshot
+			return
+		}
+		let matchesPrevious = false
+		if (previous) {
+			matchesPrevious =
+				previous.queue.length === snapshot.queue.length &&
+				previous.queue.every(
+					(id, index) => id === snapshot.queue[index]
+				) &&
+				previous.loopEnabled === snapshot.loopEnabled &&
+				previous.loopDelayMs === snapshot.loopDelayMs &&
+				previous.running === snapshot.running
+		}
+		if (matchesPrevious) {
+			return
+		}
+		lastQueueSnapshotRef.current = snapshot
+		void emitQueueState(snapshot)
+	}, [
+		emitQueueState,
+		nativeRuntime,
+		queue,
+		queueLoopDelayMs,
+		queueLoopEnabled,
+		queueRunning,
+	])
+
+	useEffect(() => {
+		if (!nativeRuntime || !queueHotkeyHydrated) {
+			return
+		}
+		if (queueHotkeySyncSuppressedRef.current) {
+			queueHotkeySyncSuppressedRef.current = false
+			return
+		}
+		void emitQueueHotkey(queueHotkey)
+	}, [emitQueueHotkey, nativeRuntime, queueHotkey, queueHotkeyHydrated])
+
+	const applyMacrosUpdate = useCallback(
+		(updater: (prev: MacroSequence[]) => MacroSequence[]) => {
+			setMacros((prev) => {
+				const next = updater(prev)
+				if (!macrosSyncSuppressedRef.current) {
+					void emitMacroSync(next)
+				}
+				return next
+			})
+		},
+		[emitMacroSync]
+	)
+
+	const replaceMacros = useCallback(
+		(next: MacroSequence[], options?: { suppressSync?: boolean }) => {
+			const suppress = Boolean(options?.suppressSync)
+			if (suppress) {
+				macrosSyncSuppressedRef.current = true
+			}
+			setMacros(next)
+			if (suppress) {
+				macrosSyncSuppressedRef.current = false
+			} else if (!macrosSyncSuppressedRef.current) {
+				void emitMacroSync(next)
+			}
+		},
+		[emitMacroSync]
+	)
+
 	useEffect(() => {
 		if (!nativeRuntime) {
 			return
@@ -574,26 +515,10 @@ export const useMacroEngine = () => {
 
 		;(async () => {
 			try {
-				const path = await getAppLocalDataPath(STORAGE_FILENAME)
-				const raw = await readTextFile(path)
-				const parsed = parseStoredMacros(raw)
-				if (!cancelled && parsed) {
-					const normalized = parsed.map((macro) => {
-						const aligned = normalizeMacroScrolls(macro)
-						return {
-							...aligned,
-							hotkey: aligned.hotkey ?? null,
-							loopEnabled: Boolean(aligned.loopEnabled),
-							loopDelayMs: clampLoopDelay(
-								aligned.loopDelayMs ?? DEFAULT_LOOP_DELAY_MS,
-								DEFAULT_LOOP_DELAY_MS
-							),
-							playbackSpeed: clampPlaybackSpeed(
-								aligned.playbackSpeed
-							),
-						}
-					})
-					setMacros(normalized)
+				const stored = await loadStoredMacros()
+				if (!cancelled && stored) {
+					const normalized = hydrateStoredMacros(stored)
+					replaceMacros(normalized, { suppressSync: true })
 					setSelectedMacroId((current) => {
 						if (
 							current &&
@@ -603,10 +528,6 @@ export const useMacroEngine = () => {
 						}
 						return normalized[0]?.id ?? null
 					})
-				}
-			} catch (error) {
-				if (!isMissingFileError(error)) {
-					console.warn('macro file read failed', error)
 				}
 			} finally {
 				if (!cancelled) {
@@ -618,7 +539,7 @@ export const useMacroEngine = () => {
 		return () => {
 			cancelled = true
 		}
-	}, [nativeRuntime])
+	}, [nativeRuntime, replaceMacros])
 
 	useEffect(() => {
 		if (!nativeRuntime) return
@@ -626,62 +547,10 @@ export const useMacroEngine = () => {
 		let cancelled = false
 
 		;(async () => {
-			let nextQueue: string | null = DEFAULT_QUEUE_HOTKEY
-			let nextRecorder: string | null = MACRO_RECORD_SHORTCUT
-			let queueFromFile = false
-			let recorderFromFile = false
-
-			try {
-				const path = await getAppLocalDataPath(HOTKEYS_FILENAME)
-				const raw = await readTextFile(path)
-				const parsed = parseHotkeysFile(raw)
-				if (parsed) {
-					if (
-						Object.prototype.hasOwnProperty.call(
-							parsed,
-							'queueHotkey'
-						)
-					) {
-						nextQueue = parsed.queueHotkey ?? null
-						queueFromFile = true
-					}
-					if (
-						Object.prototype.hasOwnProperty.call(
-							parsed,
-							'recorderHotkey'
-						)
-					) {
-						nextRecorder = parsed.recorderHotkey ?? null
-						recorderFromFile = true
-					}
-				}
-			} catch (error) {
-				if (!isMissingFileError(error)) {
-					console.warn('hotkey file read failed', error)
-				}
-			}
-
-			if (!queueFromFile) {
-				const legacyQueue = await readLegacyHotkeyFile(
-					LEGACY_QUEUE_HOTKEY_FILENAME
-				)
-				if (legacyQueue !== undefined) {
-					nextQueue = legacyQueue ?? null
-				}
-			}
-
-			if (!recorderFromFile) {
-				const legacyRecorder = await readLegacyHotkeyFile(
-					LEGACY_RECORDER_HOTKEY_FILENAME
-				)
-				if (legacyRecorder !== undefined) {
-					nextRecorder = legacyRecorder ?? null
-				}
-			}
-
+			const next = await loadHotkeySettings()
 			if (!cancelled) {
-				setQueueHotkey(nextQueue)
-				setRecorderHotkey(nextRecorder)
+				setQueueHotkey(next.queueHotkey)
+				setRecorderHotkey(next.recorderHotkey)
 				setQueueHotkeyHydrated(true)
 				setRecorderHotkeyHydrated(true)
 			}
@@ -696,22 +565,10 @@ export const useMacroEngine = () => {
 		if (!nativeRuntime || !queueHotkeyHydrated || !recorderHotkeyHydrated)
 			return
 
-		const persist = async () => {
-			try {
-				const path = await getAppLocalDataPath(HOTKEYS_FILENAME)
-				await writeTextFile(
-					path,
-					JSON.stringify({
-						queueHotkey: queueHotkey ?? null,
-						recorderHotkey: recorderHotkey ?? null,
-					})
-				)
-			} catch (error) {
-				console.warn('hotkey file write failed', error)
-			}
-		}
-
-		void persist()
+		void persistHotkeySettings({
+			queueHotkey: queueHotkey ?? null,
+			recorderHotkey: recorderHotkey ?? null,
+		})
 	}, [
 		nativeRuntime,
 		queueHotkeyHydrated,
@@ -723,16 +580,7 @@ export const useMacroEngine = () => {
 	useEffect(() => {
 		if (!nativeRuntime || !macrosHydrated) return
 
-		const persist = async () => {
-			try {
-				const path = await getAppLocalDataPath(STORAGE_FILENAME)
-				await writeTextFile(path, JSON.stringify(macros))
-			} catch (error) {
-				console.warn('macro file write failed', error)
-			}
-		}
-
-		void persist()
+		void persistStoredMacros(macros)
 	}, [macros, nativeRuntime, macrosHydrated])
 
 	useEffect(() => {
@@ -744,26 +592,32 @@ export const useMacroEngine = () => {
 		})
 	}, [macros])
 
-	const appendRecentEvent = useCallback((event: MacroEvent) => {
-		setRecentEvents((prev) => [event, ...prev].slice(0, 12))
-	}, [])
-
 	useEffect(() => {
-		if (!nativeRuntime) return
-		let unlistenEvent: (() => void) | undefined
+		if (!nativeRuntime || !shouldAttachRealtimeStreams) return
 		let unlistenStatus: (() => void) | undefined
 		let unlistenError: (() => void) | undefined
 		let unlistenPlayback: (() => void) | undefined
+		let unlistenCapture: (() => void) | undefined
 		;(async () => {
-			unlistenEvent = await listen<MacroEventWire>(
-				'macro://event',
-				({ payload }) => {
-					appendRecentEvent(fromWireEvent(payload))
-				}
-			)
 			unlistenStatus = await listen<string>(
 				'macro://status',
 				({ payload }) => {
+					if (payload === 'recording-started') {
+						recorderActiveRef.current = true
+						setRecording(true)
+						stopInFlightRef.current = false
+						setStatusText('Listening for input...')
+						setPendingCapture(null)
+						setRecentEvents([])
+						return
+					}
+					if (payload === 'recording-stopped') {
+						recorderActiveRef.current = false
+						setRecording(false)
+						stopInFlightRef.current = false
+						setStatusText('Idle')
+						return
+					}
 					setStatusText(payload)
 				}
 			)
@@ -810,12 +664,48 @@ export const useMacroEngine = () => {
 					}
 				}
 			)
+			unlistenCapture = await listen<CaptureBroadcastPayload>(
+				CAPTURE_READY_CHANNEL,
+				({ payload }) => {
+					if (!payload || payload.source === instanceIdRef.current) {
+						return
+					}
+					const events = Array.isArray(payload.events)
+						? payload.events
+						: []
+					if (!events.length) {
+						return
+					}
+					const preview =
+						Array.isArray(payload.preview) &&
+						payload.preview.length
+							? payload.preview
+							: events.slice(-RECENT_EVENT_LIMIT).reverse()
+					setPendingCapture(events)
+					setRecentEvents(preview)
+					if (payload.captureName) {
+						setCaptureName(payload.captureName)
+					}
+					setStatusText('Capture ready')
+					pushEntry(setActivity, {
+						id: nanoid(),
+						label: 'Capture ready for review',
+						tone: 'success',
+						meta: `${payload.eventCount ?? events.length} events`,
+						timestamp: Date.now(),
+					})
+				}
+			)
 			try {
 				const snapshot = await invoke<{ recording: boolean }>(
 					'app_status'
 				)
+				setRecording(snapshot.recording)
+				recorderActiveRef.current = snapshot.recording
 				if (snapshot.recording) {
 					setStatusText('Resumed session')
+				} else {
+					setStatusText('Idle')
 				}
 			} catch (error) {
 				console.warn('status probe failed', error)
@@ -823,19 +713,155 @@ export const useMacroEngine = () => {
 		})()
 
 		return () => {
-			unlistenEvent?.()
 			unlistenStatus?.()
 			unlistenError?.()
 			unlistenPlayback?.()
+			unlistenCapture?.()
 		}
-	}, [appendRecentEvent, nativeRuntime])
+	}, [nativeRuntime, shouldAttachRealtimeStreams])
+
+	useEffect(() => {
+		if (!nativeRuntime || !shouldAttachRealtimeStreams) {
+			return
+		}
+		let unlistenSync: (() => void) | undefined
+		;(async () => {
+			unlistenSync = await listen<MacroSyncPayload>(
+				MACRO_SYNC_CHANNEL,
+				({ payload }) => {
+					if (
+						!payload ||
+						payload.source === instanceIdRef.current ||
+						!Array.isArray(payload.macros)
+					) {
+						return
+					}
+					replaceMacros(payload.macros, { suppressSync: true })
+				}
+			)
+		})()
+
+		return () => {
+			unlistenSync?.()
+		}
+	}, [nativeRuntime, replaceMacros, shouldAttachRealtimeStreams])
+
+	useEffect(() => {
+		if (!nativeRuntime || !shouldAttachRealtimeStreams) {
+			return
+		}
+		let unlistenQueueState: (() => void) | undefined
+		let unlistenQueueHotkey: (() => void) | undefined
+		let unlistenQueueRequest: (() => void) | undefined
+		;(async () => {
+			try {
+				unlistenQueueState = await listen<QueueStateBroadcastPayload>(
+					QUEUE_STATE_CHANNEL,
+					({ payload }) => {
+						if (
+							!payload ||
+							payload.source === instanceIdRef.current
+						) {
+							return
+						}
+						queueStateSyncSuppressedRef.current = true
+						queueBroadcastReadyRef.current = true
+						if (Array.isArray(payload.queue)) {
+							setQueue([...payload.queue])
+						}
+						if (typeof payload.loopEnabled === 'boolean') {
+							setQueueLoopEnabled(payload.loopEnabled)
+						}
+						if (typeof payload.loopDelayMs === 'number') {
+							setQueueLoopDelayMs(
+								clampLoopDelay(
+									payload.loopDelayMs,
+									DEFAULT_QUEUE_LOOP_DELAY_MS
+								)
+							)
+						}
+						if (typeof payload.running === 'boolean') {
+							setQueueRunning(payload.running)
+						}
+					}
+				)
+
+				unlistenQueueHotkey =
+					await listen<QueueHotkeyBroadcastPayload>(
+						QUEUE_HOTKEY_CHANNEL,
+						({ payload }) => {
+							if (
+								!payload ||
+								payload.source === instanceIdRef.current
+							) {
+								return
+							}
+							queueHotkeySyncSuppressedRef.current = true
+							setQueueHotkey(payload.hotkey ?? null)
+							setQueueHotkeyHydrated(true)
+						}
+					)
+
+				unlistenQueueRequest = await listen<QueueStateRequestPayload>(
+					QUEUE_STATE_REQUEST_CHANNEL,
+					({ payload }) => {
+						if (
+							!payload ||
+							payload.source === instanceIdRef.current ||
+							!queueBroadcastReadyRef.current
+						) {
+							return
+						}
+						void emitQueueState({
+							queue: [...queueRef.current],
+							loopEnabled: queueLoopEnabledRef.current,
+							loopDelayMs: queueLoopDelayRef.current,
+							running: queueRunningRef.current,
+						})
+					}
+				)
+			} catch (error) {
+				console.warn('queue sync listener failed', error)
+			}
+		})()
+
+		return () => {
+			unlistenQueueState?.()
+			unlistenQueueHotkey?.()
+			unlistenQueueRequest?.()
+		}
+	}, [emitQueueState, nativeRuntime, shouldAttachRealtimeStreams])
+
+	useEffect(() => {
+		if (!nativeRuntime || !shouldAttachRealtimeStreams) {
+			return
+		}
+		if (queueBroadcastReadyRef.current) {
+			return
+		}
+		void emit<QueueStateRequestPayload>(QUEUE_STATE_REQUEST_CHANNEL, {
+			source: instanceIdRef.current,
+		}).catch((error) => {
+			console.warn('queue state request failed', error)
+		})
+	}, [nativeRuntime, shouldAttachRealtimeStreams])
 
 	const startRecording = useCallback(
 		async (name?: string) => {
 			const invokedViaHotkey =
 				recorderHotkeyIntentRef.current === 'start'
 			recorderHotkeyIntentRef.current = null
-			if (recording) return
+			if (stopInFlightRef.current) {
+				return
+			}
+			if (recording || recorderActiveRef.current) {
+				if (!recording && recorderActiveRef.current) {
+					setRecording(true)
+					setStatusText('Recorder already running')
+				}
+				return
+			}
+			stopInFlightRef.current = false
 			const label = name?.trim() || `Capture ${macros.length + 1}`
 			setCaptureName(label)
 			setRecentEvents([])
@@ -852,7 +878,9 @@ export const useMacroEngine = () => {
 			if (nativeRuntime) {
 				try {
 					await invoke('start_recording')
+					recorderActiveRef.current = true
 				} catch (error) {
+					recorderActiveRef.current = false
 					recordingOriginRef.current = null
 					pushEntry(setActivity, {
 						id: nanoid(),
@@ -866,22 +894,44 @@ export const useMacroEngine = () => {
 					return
 				}
 			} else {
-				mockRecording().forEach((event, index) => {
-					setTimeout(() => appendRecentEvent(event), index * 180)
-				})
+				recorderActiveRef.current = true
 			}
 
 			setRecording(true)
 		},
-		[appendRecentEvent, macros.length, nativeRuntime, recording]
+		[macros.length, nativeRuntime, recording]
 	)
 
 	const stopRecording = useCallback(
 		async (_name?: string) => {
 			const stopViaHotkey = recorderHotkeyIntentRef.current === 'stop'
 			recorderHotkeyIntentRef.current = null
-			if (!recording) return
+			if (stopInFlightRef.current) {
+				return
+			}
+			let shouldStop = recording || recorderActiveRef.current
+			if (!shouldStop && nativeRuntime) {
+				try {
+					const snapshot = await invoke<{ recording: boolean }>(
+						'app_status'
+					)
+					if (snapshot.recording) {
+						shouldStop = true
+						recorderActiveRef.current = true
+						setRecording(true)
+						setStatusText('Resumed session')
+					}
+				} catch (error) {
+					console.warn('recorder status probe failed', error)
+				}
+			}
+			if (!shouldStop) {
+				return
+			}
+			stopInFlightRef.current = true
 			const startedViaHotkey = recordingOriginRef.current === 'hotkey'
+			const captureLabel = captureName
+			let stopError: unknown = null
 			try {
 				let events: MacroEvent[] = []
 				if (nativeRuntime) {
@@ -916,7 +966,18 @@ export const useMacroEngine = () => {
 					return
 				}
 
+				const preview = sanitized.slice(-RECENT_EVENT_LIMIT).reverse()
+				setRecentEvents(preview)
+
 				setPendingCapture(sanitized)
+				if (nativeRuntime) {
+					void broadcastCaptureReady({
+						events: sanitized,
+						preview,
+						captureName: captureLabel,
+						count: sanitized.length,
+					})
+				}
 				setStatusText('Capture ready')
 				pushEntry(setActivity, {
 					id: nanoid(),
@@ -926,6 +987,7 @@ export const useMacroEngine = () => {
 					timestamp: Date.now(),
 				})
 			} catch (error) {
+				stopError = error
 				pushEntry(setActivity, {
 					id: nanoid(),
 					label: 'Recorder stopped unexpectedly',
@@ -934,16 +996,70 @@ export const useMacroEngine = () => {
 					timestamp: Date.now(),
 				})
 			} finally {
-				setRecording(false)
+				if (stopError && nativeRuntime) {
+					try {
+						const snapshot = await invoke<{ recording: boolean }>(
+							'app_status'
+						)
+						recorderActiveRef.current = snapshot.recording
+						setRecording(snapshot.recording)
+						if (snapshot.recording) {
+							setStatusText('Recorder still running')
+						}
+					} catch (probeError) {
+						console.warn(
+							'recorder status probe failed after stop',
+							probeError
+						)
+					}
+				} else {
+					recorderActiveRef.current = false
+					setRecording(false)
+				}
 				recordingOriginRef.current = null
+				stopInFlightRef.current = false
 			}
 		},
-		[nativeRuntime, recorderHotkey, recording]
+		[
+			broadcastCaptureReady,
+			captureName,
+			nativeRuntime,
+			recorderHotkey,
+			recording,
+		]
 	)
 
 	useEffect(() => {
-		if (!nativeRuntime || !recorderHotkeyHydrated || !recorderHotkey)
+		if (
+			!nativeRuntime ||
+			!recorderHotkeyHydrated ||
+			!recorderHotkey ||
+			overlayPanelRuntime !== false
+		)
 			return
+
+		const scheduleReleaseFallback = () => {
+			if (typeof window === 'undefined') {
+				return
+			}
+			if (recorderHotkeyResetTimerRef.current) {
+				window.clearTimeout(recorderHotkeyResetTimerRef.current)
+			}
+			recorderHotkeyResetTimerRef.current = window.setTimeout(() => {
+				recorderHotkeyHeldRef.current = false
+				recorderHotkeyResetTimerRef.current = null
+			}, 1500)
+		}
+
+		const clearReleaseFallback = () => {
+			if (
+				typeof window !== 'undefined' &&
+				recorderHotkeyResetTimerRef.current
+			) {
+				window.clearTimeout(recorderHotkeyResetTimerRef.current)
+				recorderHotkeyResetTimerRef.current = null
+			}
+		}
 
 		const setupShortcut = async () => {
 			try {
@@ -951,22 +1067,27 @@ export const useMacroEngine = () => {
 				await register(recorderHotkey, async (event) => {
 					try {
 						if (event.state === 'Released') {
-							if (!recorderHotkeyHeldRef.current) {
-								return
-							}
 							recorderHotkeyHeldRef.current = false
-							recorderHotkeyIntentRef.current = recording
-								? 'stop'
-								: 'start'
-							if (recording) {
-								await stopRecording()
-							} else {
-								await startRecording()
-							}
+							clearReleaseFallback()
 							return
 						}
-						if (event.state === 'Pressed') {
-							recorderHotkeyHeldRef.current = true
+						if (
+							event.state !== 'Pressed' ||
+							recorderHotkeyHeldRef.current
+						) {
+							return
+						}
+						recorderHotkeyHeldRef.current = true
+						scheduleReleaseFallback()
+						const isRecorderActive =
+							recorderActiveRef.current || recording
+						recorderHotkeyIntentRef.current = isRecorderActive
+							? 'stop'
+							: 'start'
+						if (isRecorderActive) {
+							await stopRecording()
+						} else {
+							await startRecording()
 						}
 					} catch (error) {
 						console.warn(
@@ -987,12 +1108,14 @@ export const useMacroEngine = () => {
 
 		return () => {
 			recorderHotkeyHeldRef.current = false
+			clearReleaseFallback()
 			if (recorderHotkey) {
 				void unregister(recorderHotkey).catch(() => undefined)
 			}
 		}
 	}, [
 		nativeRuntime,
+		overlayPanelRuntime,
 		recorderHotkeyHydrated,
 		recorderHotkey,
 		recording,
@@ -1022,7 +1145,7 @@ export const useMacroEngine = () => {
 		async (label?: string) => {
 			if (!pendingCapture?.length) return
 			const macro = persistMacro(pendingCapture, label)
-			setMacros((prev) => [macro, ...prev])
+			applyMacrosUpdate((prev) => [macro, ...prev])
 			setSelectedMacroId(macro.id)
 			setPendingCapture(null)
 			pushEntry(setActivity, {
@@ -1034,7 +1157,7 @@ export const useMacroEngine = () => {
 			})
 			setStatusText('Idle')
 		},
-		[pendingCapture, persistMacro]
+		[applyMacrosUpdate, pendingCapture, persistMacro]
 	)
 
 	const discardPendingCapture = useCallback(() => {
@@ -1144,7 +1267,7 @@ export const useMacroEngine = () => {
 
 			await playbackPromise
 
-			setMacros((prev) =>
+			applyMacrosUpdate((prev) =>
 				prev.map((macro) =>
 					macro.id === target.id
 						? {
@@ -1155,7 +1278,7 @@ export const useMacroEngine = () => {
 				)
 			)
 		},
-		[executeEvents, nativeRuntime, setIsPlaying]
+		[applyMacrosUpdate, executeEvents, nativeRuntime, setIsPlaying]
 	)
 
 	const scheduleMacroLoop = useCallback(
@@ -1228,7 +1351,8 @@ export const useMacroEngine = () => {
 	)
 
 	useEffect(() => {
-		if (!nativeRuntime || !macrosHydrated) return
+		if (!nativeRuntime || !macrosHydrated || overlayPanelRuntime !== false)
+			return
 
 		const refreshHotkeys = async () => {
 			const unregisterAll = Array.from(
@@ -1303,14 +1427,23 @@ export const useMacroEngine = () => {
 			macroHotkeyPressed.current.clear()
 			void Promise.all(pending)
 		}
-	}, [macros, macrosHydrated, nativeRuntime, playMacro, stopMacroLoop])
+	}, [
+		macros,
+		macrosHydrated,
+		nativeRuntime,
+		overlayPanelRuntime,
+		playMacro,
+		stopMacroLoop,
+	])
 
 	const deleteMacro = useCallback(
 		(id: string) => {
 			const target = macros.find((macro) => macro.id === id)
 			stopMacroLoop(id, { silent: true })
 
-			setMacros((prev) => prev.filter((macro) => macro.id !== id))
+			applyMacrosUpdate((prev) =>
+				prev.filter((macro) => macro.id !== id)
+			)
 
 			if (target) {
 				pushEntry(setActivity, {
@@ -1326,7 +1459,7 @@ export const useMacroEngine = () => {
 				setSelectedMacroId(null)
 			}
 		},
-		[macros, selectedMacroId, stopMacroLoop]
+		[applyMacrosUpdate, macros, selectedMacroId, stopMacroLoop]
 	)
 
 	const stats: MacroStats = useMemo(() => {
@@ -1356,11 +1489,23 @@ export const useMacroEngine = () => {
 		}
 	}, [captureName, macros, selectedMacroId])
 
+	const applyQueueState = useCallback(
+		(next: string[] | ((prev: string[]) => string[])) => {
+			queueBroadcastReadyRef.current = true
+			setQueue((prev) =>
+				typeof next === 'function'
+					? (next as (value: string[]) => string[])(prev)
+					: next
+			)
+		},
+		[]
+	)
+
 	const queueMacro = useCallback(
 		(id: string) => {
 			const macro = macros.find((item) => item.id === id)
 			if (!macro) return
-			setQueue((current) => [...current, id])
+			applyQueueState((current) => [...current, id])
 			pushEntry(setActivity, {
 				id: nanoid(),
 				label: `${macro.name} queued`,
@@ -1368,7 +1513,7 @@ export const useMacroEngine = () => {
 				timestamp: Date.now(),
 			})
 		},
-		[macros]
+		[applyQueueState, macros]
 	)
 
 	const queuedMacros = useMemo(
@@ -1449,7 +1594,7 @@ export const useMacroEngine = () => {
 				if (!queueLoopEnabledRef.current) {
 					return
 				}
-				setQueue(macroIds)
+				applyQueueState(macroIds)
 				pushEntry(setActivity, {
 					id: nanoid(),
 					label: 'Repeating queue',
@@ -1470,12 +1615,17 @@ export const useMacroEngine = () => {
 				}
 			}, delay)
 		},
-		[clearQueueLoopTimer, runQueueSequence, setQueueRunning]
+		[
+			applyQueueState,
+			clearQueueLoopTimer,
+			runQueueSequence,
+			setQueueRunning,
+		]
 	)
 
 	const clearQueue = useCallback(() => {
 		if (!queue.length && !queueRunningRef.current) return
-		setQueue([])
+		applyQueueState([])
 		stopQueuePlayback({
 			disableLoop: true,
 			silent: true,
@@ -1487,7 +1637,7 @@ export const useMacroEngine = () => {
 			tone: 'warning',
 			timestamp: Date.now(),
 		})
-	}, [queue, stopQueuePlayback])
+	}, [applyQueueState, queue, stopQueuePlayback])
 
 	const updateMacroEvents = useCallback(
 		(id: string, events: MacroEvent[]) => {
@@ -1496,7 +1646,7 @@ export const useMacroEngine = () => {
 			const sanitized = sanitizeMacroEventList(events)
 			const wasLooping = activeLoopMacrosRef.current.has(id)
 			stopMacroLoop(id, { silent: true })
-			setMacros((prev) =>
+			applyMacrosUpdate((prev) =>
 				prev.map((macro) =>
 					macro.id === id
 						? {
@@ -1517,7 +1667,7 @@ export const useMacroEngine = () => {
 				scheduleMacroLoop(id)
 			}
 		},
-		[scheduleMacroLoop, setMacros, stopMacroLoop]
+		[applyMacrosUpdate, scheduleMacroLoop, stopMacroLoop]
 	)
 
 	const updateMacroLoopSettings = useCallback(
@@ -1533,7 +1683,7 @@ export const useMacroEngine = () => {
 				DEFAULT_LOOP_DELAY_MS
 			)
 
-			setMacros((prev) =>
+			applyMacrosUpdate((prev) =>
 				prev.map((macro) =>
 					macro.id === id
 						? {
@@ -1553,7 +1703,7 @@ export const useMacroEngine = () => {
 				stopMacroLoop(id, { silent: true })
 			}
 		},
-		[scheduleMacroLoop, setMacros, stopMacroLoop]
+		[applyMacrosUpdate, scheduleMacroLoop, stopMacroLoop]
 	)
 
 	const updateMacroPlaybackSpeed = useCallback(
@@ -1564,7 +1714,7 @@ export const useMacroEngine = () => {
 			if (baseline.playbackSpeed === nextSpeed) {
 				return
 			}
-			setMacros((prev) =>
+			applyMacrosUpdate((prev) =>
 				prev.map((macro) =>
 					macro.id === id
 						? {
@@ -1582,7 +1732,7 @@ export const useMacroEngine = () => {
 				timestamp: Date.now(),
 			})
 		},
-		[setMacros]
+		[applyMacrosUpdate]
 	)
 
 	const playQueuedMacros = useCallback(async () => {
@@ -1590,9 +1740,9 @@ export const useMacroEngine = () => {
 		const itemsToPlay = [...queuedMacros]
 		const macroIds = itemsToPlay.map((macro) => macro.id)
 		if (queueLoopEnabledRef.current) {
-			setQueue(macroIds)
+			applyQueueState(macroIds)
 		} else {
-			setQueue([])
+			applyQueueState([])
 		}
 		pushEntry(setActivity, {
 			id: nanoid(),
@@ -1612,10 +1762,33 @@ export const useMacroEngine = () => {
 		if (queueLoopEnabledRef.current && !controller.cancelled) {
 			scheduleQueueLoop(macroIds)
 		}
-	}, [queuedMacros, runQueueSequence, scheduleQueueLoop])
+	}, [applyQueueState, queuedMacros, runQueueSequence, scheduleQueueLoop])
 
 	useEffect(() => {
-		if (!nativeRuntime) return
+		if (!nativeRuntime || overlayPanelRuntime !== false) return
+
+		const scheduleReleaseFallback = () => {
+			if (typeof window === 'undefined') {
+				return
+			}
+			if (queueHotkeyResetTimerRef.current) {
+				window.clearTimeout(queueHotkeyResetTimerRef.current)
+			}
+			queueHotkeyResetTimerRef.current = window.setTimeout(() => {
+				queueHotkeyHeldRef.current = false
+				queueHotkeyResetTimerRef.current = null
+			}, 1500)
+		}
+
+		const clearReleaseFallback = () => {
+			if (
+				typeof window !== 'undefined' &&
+				queueHotkeyResetTimerRef.current
+			) {
+				window.clearTimeout(queueHotkeyResetTimerRef.current)
+				queueHotkeyResetTimerRef.current = null
+			}
+		}
 
 		const setup = async () => {
 			try {
@@ -1623,26 +1796,26 @@ export const useMacroEngine = () => {
 					return
 				}
 				await register(queueHotkey, async (event) => {
-					if (event.state === 'Pressed') {
-						queueHotkeyHeldRef.current = true
+					if (event.state === 'Released') {
+						queueHotkeyHeldRef.current = false
+						clearReleaseFallback()
 						return
 					}
-					if (event.state === 'Released') {
-						if (!queueHotkeyHeldRef.current) {
-							return
-						}
-						queueHotkeyHeldRef.current = false
-						if (
-							queueRunningRef.current ||
-							queueLoopTimerRef.current
-						) {
-							stopQueuePlayback({
-								disableLoop: true,
-								reason: 'Shortcut',
-							})
-						} else {
-							await playQueuedMacros()
-						}
+					if (
+						event.state !== 'Pressed' ||
+						queueHotkeyHeldRef.current
+					) {
+						return
+					}
+					queueHotkeyHeldRef.current = true
+					scheduleReleaseFallback()
+					if (queueRunningRef.current || queueLoopTimerRef.current) {
+						stopQueuePlayback({
+							disableLoop: true,
+							reason: 'Shortcut',
+						})
+					} else {
+						await playQueuedMacros()
 					}
 				})
 			} catch (error) {
@@ -1654,11 +1827,18 @@ export const useMacroEngine = () => {
 
 		return () => {
 			queueHotkeyHeldRef.current = false
+			clearReleaseFallback()
 			if (queueHotkey) {
 				void unregister(queueHotkey).catch(() => undefined)
 			}
 		}
-	}, [nativeRuntime, playQueuedMacros, queueHotkey, stopQueuePlayback])
+	}, [
+		nativeRuntime,
+		overlayPanelRuntime,
+		playQueuedMacros,
+		queueHotkey,
+		stopQueuePlayback,
+	])
 
 	const updateQueueLoopSettings = useCallback(
 		(settings: { enabled?: boolean; delayMs?: number }) => {
@@ -1709,7 +1889,7 @@ export const useMacroEngine = () => {
 	const updateMacroHotkey = useCallback(
 		(id: string, hotkey: string | null) => {
 			const target = macros.find((macro) => macro.id === id)
-			setMacros((prev) =>
+			applyMacrosUpdate((prev) =>
 				prev.map((macro) =>
 					macro.id === id
 						? {
@@ -1732,7 +1912,7 @@ export const useMacroEngine = () => {
 				})
 			}
 		},
-		[macros]
+		[applyMacrosUpdate, macros]
 	)
 
 	const pendingCaptureMetrics = useMemo(() => {

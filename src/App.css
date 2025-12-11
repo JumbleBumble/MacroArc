@@ -83,6 +83,13 @@ body::after {
   box-shadow: 0 25px 55px rgba(4, 5, 11, 0.55);
 }
 
+.glass-panel-ur {
+  backdrop-filter: blur(18px);
+  background: var(--surface-raised);
+  border: 1px solid var(--surface-border);
+  box-shadow: 0 25px 55px rgba(4, 5, 11, 0.55);
+}
+
 .loop-surface {
   border: 1px solid var(--loop-surface-border) !important;
   background: var(--loop-surface-bg) !important;
@@ -112,6 +119,242 @@ select.input-surface option {
 [data-theme='light'] select.input-surface option {
   background-color: #ffffff;
   color: #0f1221;
+}
+
+body.overlay-mode-active {
+  overflow: hidden;
+}
+
+.overlay-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  pointer-events: none;
+}
+
+.overlay-canvas__backdrop {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+}
+
+.overlay-canvas__toolbar {
+  position: absolute;
+  top: 1.25rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: min(90vw, 820px);
+  padding: 0.9rem 1.6rem;
+  border-radius: 999px;
+  pointer-events: auto;
+}
+
+.overlay-toolbar__button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.55rem 1.2rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-strong);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.overlay-toolbar__button svg {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+.overlay-toolbar__button:hover {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.overlay-toolbar__button--accent {
+  background: var(--accent);
+  color: #04050b;
+  border-color: transparent;
+}
+
+.overlay-bubble {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  border-radius: 26px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  box-shadow: 0 35px 90px rgba(3, 4, 10, 0.65);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  pointer-events: auto;
+  overflow: hidden;
+}
+
+.overlay-bubble--active {
+  border-color: var(--accent);
+  box-shadow: 0 45px 120px rgba(142, 103, 255, 0.35);
+}
+
+.overlay-bubble__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.85rem 1.1rem;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: grab;
+  user-select: none;
+}
+
+.overlay-bubble__header:active {
+  cursor: grabbing;
+}
+
+.overlay-bubble__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-strong);
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.overlay-bubble__icon:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.32);
+}
+
+.overlay-bubble__body {
+  flex: 1;
+  padding: 1rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.overlay-bubble__body > .glass-panel,
+.overlay-panel-window__body > .glass-panel {
+  height: auto;
+  min-height: 100%;
+}
+
+.overlay-native-callout {
+  margin-top: 1.25rem;
+  padding: 1rem 1.25rem;
+  border-radius: 24px;
+  border: 1px dashed rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(14px);
+}
+
+body.overlay-panel-window {
+  background: transparent;
+  min-height: 100vh;
+  height: 100vh;
+  width: 100%;
+  overflow: hidden;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+}
+
+body.overlay-panel-window #root {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+}
+
+
+.overlay-panel-window__stage {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 0;
+  background: transparent;
+}
+
+.overlay-panel-window__chrome {
+  width: 100%;
+  height: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: transparent;
+  box-shadow: 0 45px 120px rgba(4, 5, 11, 0.8);
+  overflow-y: hidden;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.overlay-panel-window__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.85rem 1.25rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0));
+  cursor: grab;
+  user-select: none;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  backdrop-filter: blur(16px);
+}
+
+.overlay-panel-window__title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.overlay-panel-window__actions {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.overlay-panel-window__actions button {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.overlay-panel-window__actions button:hover {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.36);
+}
+
+.overlay-panel-window__body {
+  flex: 1;
+  padding: 1.25rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  overscroll-behavior: contain;
 }
 
 .grid-noise {
